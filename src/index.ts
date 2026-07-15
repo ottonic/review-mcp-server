@@ -2,7 +2,6 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { z } from 'zod'
-import { randomUUID } from 'node:crypto'
 import { getDb } from './db.js'
 
 async function runTool<T>(fn: () => Promise<T>) {
@@ -17,9 +16,19 @@ async function runTool<T>(fn: () => Promise<T>) {
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true } as const
 const WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false } as const
-const annotationKind = z.enum(['tag', 'note', 'claim'])
-const annotationStatus = z.enum(['proposed', 'confirmed', 'rejected'])
-const annotationSource = z.enum(['user', 'ai', 'tool'])
+const metadataSource = z.enum(['user', 'ai', 'tool'])
+const updateMode = z.enum(['replace', 'append'])
+
+function rowToMetadata(row: Record<string, unknown>) {
+  return {
+    entityId: row.entity_id,
+    name: row.name ?? undefined,
+    note: row.note,
+    source: row.source,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
 
 serveStdio(() => {
   const server = new McpServer(
@@ -28,134 +37,116 @@ serveStdio(() => {
   )
 
   server.registerTool(
-    'create_annotation',
+    'get_entity_metadata',
     {
-      description: 'Create a tag, note, or claim attached to one or more CAD body/face entity IDs.',
+      description: 'Get name/note metadata records for exact CAD entity IDs.',
       inputSchema: z.object({
-        entityIds: z.array(z.string()).min(1).max(100),
-        kind: annotationKind,
-        text: z.string().min(1),
-        status: annotationStatus.default('proposed'),
-        source: annotationSource.default('user'),
-        confidence: z.number().min(0).max(1).optional(),
-        evidence: z.record(z.string(), z.unknown()).optional(),
-        createdBy: z.string().optional(),
+        entityIds: z.array(z.string()).min(1).max(500),
       }).strict(),
-      annotations: WRITE,
+      annotations: READ_ONLY,
     },
-    async ({ entityIds, kind, text, status, source, confidence, evidence, createdBy }) => runTool(async () => {
+    async ({ entityIds }) => runTool(async () => {
       const db = getDb()
-      const id = randomUUID()
-      db.prepare(`INSERT INTO annotations (id, kind, text, status, source, confidence, evidence_json, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, kind, text, status, source, confidence ?? null, evidence ? JSON.stringify(evidence) : null, createdBy ?? source)
-      const entityStmt = db.prepare('INSERT INTO annotation_entities (annotation_id, entity_id) VALUES (?, ?)')
-      for (const entityId of entityIds) entityStmt.run(id, entityId)
-      db.prepare('INSERT INTO review_trail (action, entity_id, detail, created_by) VALUES (?, ?, ?, ?)')
-        .run('create_annotation', entityIds[0], JSON.stringify({ annotationId: id, entityIds, kind, text, status, source }), createdBy ?? source)
-      return { annotation: { id, entityIds, kind, text, status, source, confidence: confidence ?? null } }
+      const rows = db.prepare(`SELECT entity_id, name, note, source, created_at, updated_at
+        FROM entity_metadata
+        WHERE entity_id IN (${entityIds.map(() => '?').join(',')})`).all(...entityIds) as Record<string, unknown>[]
+      return { entityMetadata: rows.map(rowToMetadata) }
     }),
   )
 
   server.registerTool(
-    'update_annotation_status',
+    'set_entity_metadata',
     {
-      description: 'Confirm or reject an existing annotation.',
+      description: 'Create or update one CAD entity metadata record with an optional readable name and one note field.',
       inputSchema: z.object({
-        annotationId: z.string(),
-        status: annotationStatus,
+        entityId: z.string().min(1),
+        name: z.string().nullable().optional(),
+        note: z.string().optional(),
+        mode: updateMode.default('replace'),
+        source: metadataSource.default('user'),
         updatedBy: z.string().optional(),
       }).strict(),
       annotations: WRITE,
     },
-    async ({ annotationId, status, updatedBy }) => runTool(async () => {
+    async ({ entityId, name, note, mode, source, updatedBy }) => runTool(async () => {
       const db = getDb()
-      const result = db.prepare("UPDATE annotations SET status = ?, updated_at = datetime('now') WHERE id = ?")
-        .run(status, annotationId)
-      if (Number(result.changes) === 0) throw new Error(`Annotation ${annotationId} not found`)
-      db.prepare('INSERT INTO review_trail (action, detail, created_by) VALUES (?, ?, ?)')
-        .run('update_annotation_status', JSON.stringify({ annotationId, status }), updatedBy ?? 'user')
-      return { annotationId, status }
+      const existing = db.prepare('SELECT note FROM entity_metadata WHERE entity_id = ?').get(entityId) as { note?: string } | undefined
+      const nextNote = note === undefined
+        ? existing?.note ?? ''
+        : mode === 'append' && existing?.note?.trim()
+          ? `${existing.note.trim()}\n\n${note.trim()}`
+          : note
+      db.prepare(`INSERT INTO entity_metadata (entity_id, name, note, source)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(entity_id) DO UPDATE SET
+          name = excluded.name,
+          note = excluded.note,
+          source = excluded.source,
+          updated_at = datetime('now')`)
+        .run(entityId, name === undefined ? null : name, nextNote, source)
+      db.prepare('INSERT INTO review_trail (action, entity_id, detail, created_by) VALUES (?, ?, ?, ?)')
+        .run('set_entity_metadata', entityId, JSON.stringify({ entityId, name, note, mode, source }), updatedBy ?? source)
+      const row = db.prepare(`SELECT entity_id, name, note, source, created_at, updated_at
+        FROM entity_metadata WHERE entity_id = ?`).get(entityId) as Record<string, unknown>
+      return { entityMetadata: rowToMetadata(row) }
     }),
   )
 
   server.registerTool(
-    'query_annotations',
+    'query_entity_metadata',
     {
-      description: 'Query tag, note, and claim annotations by entity IDs, kind, status, or source.',
+      description: 'Search CAD entity metadata by text or hashtag.',
       inputSchema: z.object({
-        entityIds: z.array(z.string()).min(1).max(100).optional(),
-        kinds: z.array(annotationKind).optional(),
-        statuses: z.array(annotationStatus).optional(),
-        sources: z.array(annotationSource).optional(),
+        entityIds: z.array(z.string()).min(1).max(500).optional(),
+        search: z.string().optional(),
+        hashtags: z.array(z.string()).optional(),
         limit: z.number().int().min(1).max(500).default(100),
         offset: z.number().int().min(0).default(0),
       }).strict(),
       annotations: READ_ONLY,
     },
-    async ({ entityIds, kinds, statuses, sources, limit, offset }) => runTool(async () => {
+    async ({ entityIds, search, hashtags, limit, offset }) => runTool(async () => {
       const db = getDb()
       const params: (string | number)[] = []
       const clauses: string[] = []
       if (entityIds?.length) {
-        clauses.push(`ae.entity_id IN (${entityIds.map(() => '?').join(',')})`)
+        clauses.push(`entity_id IN (${entityIds.map(() => '?').join(',')})`)
         params.push(...entityIds)
       }
-      if (kinds?.length) { clauses.push(`a.kind IN (${kinds.map(() => '?').join(',')})`); params.push(...kinds) }
-      if (statuses?.length) { clauses.push(`a.status IN (${statuses.map(() => '?').join(',')})`); params.push(...statuses) }
-      if (sources?.length) { clauses.push(`a.source IN (${sources.map(() => '?').join(',')})`); params.push(...sources) }
+      if (search?.trim()) {
+        clauses.push('(entity_id LIKE ? OR name LIKE ? OR note LIKE ?)')
+        const term = `%${search.trim()}%`
+        params.push(term, term, term)
+      }
+      for (const hashtag of hashtags ?? []) {
+        clauses.push('note LIKE ?')
+        params.push(`%#${hashtag.replace(/^#/, '')}%`)
+      }
       const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
       params.push(limit, offset)
-      const rows = db.prepare(`SELECT a.id, a.kind, a.text, a.status, a.source, a.confidence, a.evidence_json,
-          a.created_by, a.created_at, a.updated_at, group_concat(ae.entity_id) AS entity_ids
-        FROM annotations a
-        JOIN annotation_entities ae ON ae.annotation_id = a.id
-        ${where}
-        GROUP BY a.id
-        ORDER BY a.updated_at DESC
-        LIMIT ? OFFSET ?`).all(...params) as Record<string, unknown>[]
-      return {
-        annotations: rows.map((row) => ({
-          id: row.id,
-          kind: row.kind,
-          text: row.text,
-          status: row.status,
-          source: row.source,
-          confidence: row.confidence,
-          evidence: row.evidence_json ? JSON.parse(row.evidence_json as string) : undefined,
-          entityIds: String(row.entity_ids ?? '').split(',').filter(Boolean),
-          createdBy: row.created_by,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        })),
-      }
+      const rows = db.prepare(`SELECT entity_id, name, note, source, created_at, updated_at
+        FROM entity_metadata ${where}
+        ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params) as Record<string, unknown>[]
+      return { entityMetadata: rows.map(rowToMetadata) }
     }),
   )
 
   server.registerTool(
-    'query_events',
+    'clear_entity_metadata',
     {
-      description: 'Query review audit events.',
+      description: 'Clear the metadata record for one CAD entity.',
       inputSchema: z.object({
-        action: z.string().optional(),
-        entityId: z.string().optional(),
-        limit: z.number().int().min(1).max(500).default(50),
-        offset: z.number().int().min(0).default(0),
+        entityId: z.string().min(1),
+        clearedBy: z.string().optional(),
       }).strict(),
-      annotations: READ_ONLY,
+      annotations: WRITE,
     },
-    async ({ action, entityId, limit, offset }) => runTool(async () => {
+    async ({ entityId, clearedBy }) => runTool(async () => {
       const db = getDb()
-      const params: (string | number)[] = []
-      const clauses: string[] = []
-      if (action) { clauses.push('action = ?'); params.push(action) }
-      if (entityId) { clauses.push('entity_id = ?'); params.push(entityId) }
-      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-      params.push(limit, offset)
-      const entries = db.prepare(`SELECT id, action, entity_id, detail, created_by, created_at
-        FROM review_trail ${where}
-        ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params)
-      return { entries }
+      db.prepare('DELETE FROM entity_metadata WHERE entity_id = ?').run(entityId)
+      db.prepare('INSERT INTO review_trail (action, entity_id, detail, created_by) VALUES (?, ?, ?, ?)')
+        .run('clear_entity_metadata', entityId, JSON.stringify({ entityId }), clearedBy ?? 'user')
+      return { entityId, cleared: true }
     }),
   )
 
