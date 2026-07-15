@@ -1,0 +1,29 @@
+{
+  "name": "review-mcp-server",
+  "version": "0.1.0",
+  "description": "Review context for CAD inspection: labels, notes, groups, and review trail. Query and persist human+AI metadata on geometry entities.",
+  "type": "module",
+"main": "dist/index.js",
+"bin": {
+  "review-mcp": "dist/index.js"
+},
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/src/index.js",
+    "watch": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0-beta.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}
