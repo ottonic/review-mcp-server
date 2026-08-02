@@ -6,16 +6,21 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { getDb } from "./db.js";
 import pkg from "../package.json" with { type: "json" };
+import { logEvent } from "./logging.js";
 
-export async function runTool<T>(fn: () => Promise<T>) {
+export async function runTool<T>(fn: () => Promise<T>, tool = "unknown") {
+  const startedAt = Date.now();
+  logEvent("tool.started", { tool });
   try {
     const data = await fn();
+    logEvent("tool.completed", { tool, durationMs: Date.now() - startedAt });
     return {
       content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       structuredContent: data,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logEvent("tool.failed", { tool, durationMs: Date.now() - startedAt, error: message });
     return {
       content: [{ type: "text" as const, text: message }],
       isError: true,
@@ -131,7 +136,7 @@ export function createServer() {
           )
           .all(...entityIds) as unknown as MetadataRow[];
         return { entityMetadata: rows.map(rowToMetadata) };
-      }),
+      }, "get_entity_metadata"),
   );
 
   server.registerTool(
@@ -199,7 +204,7 @@ export function createServer() {
         });
         if (!row) throw new Error("Metadata row was not written");
         return { entityMetadata: rowToMetadata(row) };
-      }),
+      }, "set_entity_metadata"),
   );
 
   server.registerTool(
@@ -246,7 +251,7 @@ export function createServer() {
           )
           .all(...params) as unknown as MetadataRow[];
         return { entityMetadata: rows.map(rowToMetadata) };
-      }),
+      }, "query_entity_metadata"),
   );
 
   server.registerTool(
@@ -279,7 +284,7 @@ export function createServer() {
           );
         });
         return { entityId, cleared: true };
-      }),
+      }, "clear_entity_metadata"),
   );
 
   server.registerResource(
@@ -302,6 +307,7 @@ export function createServer() {
     }),
   );
 
+  logEvent("server.ready", { server: "review-mcp", protocol: "2026-07-28" });
   return server;
 }
 
