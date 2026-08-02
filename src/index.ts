@@ -54,6 +54,19 @@ export const clearOutputSchema = z.object({
   cleared: z.literal(true),
 });
 
+const REVIEW_CAPABILITY_MANIFEST = {
+  capabilityId: "review-memory",
+  version: pkg.version,
+  title: "Review Memory",
+  domain: "engineering-memory",
+  workflows: ["annotate", "recall", "search"],
+  subjects: ["geometry", "review"],
+  resultKinds: ["facts"],
+  requiredInputs: ["subjectReference"],
+  sideEffects: ["review_write"],
+  dataHandling: { processing: "local", persistence: "sqlite" },
+};
+
 type MetadataRow = {
   entity_id: string;
   name: string | null;
@@ -267,6 +280,26 @@ export function createServer() {
         });
         return { entityId, cleared: true };
       }),
+  );
+
+  server.registerResource(
+    "review-memory-capability",
+    "mcp-capability://review-memory",
+    {
+      title: "Review Memory Capability",
+      description: "Capability manifest for durable engineering meaning.",
+      mimeType: "application/json",
+      annotations: { audience: ["user", "assistant"], priority: 0.8 },
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(REVIEW_CAPABILITY_MANIFEST),
+        },
+      ],
+    }),
   );
 
   return server;
