@@ -1,29 +1,33 @@
-# Project Template
+# Review MCP Server
 
-This template defines the baseline project contract.
+A standalone MCP server for durable engineering meaning. It currently stores
+entity names, notes, and a review trail in SQLite. The server is useful through
+any MCP host; CAD Viewer enhances it with spatial presentation, revision
+context, approvals, and cross-server workflows.
 
-## Required Files
-- `.envrc` (loads the project flake)
-- `flake.nix` (defines `devShells.default`)
-- `.nvim.lua` (maps project tools to Neovim integrations)
-- `justfile` (canonical task interface)
-- `.gitignore`
-- `AGENTS.md`
+## Boundary
 
-## Canonical Commands
-- `just setup` - bootstrap dependencies and local setup
-- `just dev` - run the main local development workflow
-- `just fmt` - run formatting
-- `just lint` - run static checks
+Review MCP stores accepted meaning. It does not calculate geometry, run DFM,
+interpret FEA, or decide whether a model is manufacturable. Domain servers
+produce facts, findings, and evidence; a host or approved workflow may persist
+the accepted result here.
+
+## Tools
+
+- `get_entity_metadata` - read records for exact entity IDs
+- `set_entity_metadata` - create or update one name/note record
+- `query_entity_metadata` - search by entity, text, or hashtag
+- `clear_entity_metadata` - remove one entity record
+
+The current metadata API is intentionally small. Its planned evolution is
+revision-aware features, measurements, findings, decisions, and evidence
+references. See the Viewer repository's
+`ENGINEERING_INTELLIGENCE_CONTRACT.md` for portable subject and result
+semantics.
+
+## Development
+
+- `just dev` - run the server from TypeScript
+- `just build` - compile to `dist/`
 - `just test` - run tests
-- `just check` - run `fmt`, `lint`, and `test`
-- `just build` - produce a build artifact
-- `just clean` - clean generated outputs
-
-Projects can add extra commands, but these canonical aliases should exist.
-
-## Neovim Tooling Contract
-
-- Put project language tools in `flake.nix` so `direnv` exposes them on `$PATH`.
-- Use `.nvim.lua` only to map those tools to editor integrations.
-- Keep global Neovim language-agnostic: it provides LSP, formatting, linting, and UI infrastructure, but projects choose actual tools.
+- `just check` - run formatting, lint, and tests

@@ -1,11 +1,10 @@
-# Project Contract Checklist
+# MCP Capability Contract Checklist
 
-Use this checklist when creating or reviewing a repo.
+Use this checklist when changing Review MCP or adding another standalone engineering capability server.
 
-## Required
-- [ ] `.envrc` exists and loads flake (`use flake` or approved shared target)
-- [ ] `flake.nix` defines `devShells.default`
-- [ ] `justfile` includes canonical targets:
+## Repository Contract
+
+- [ ] `justfile` includes real canonical targets:
   - [ ] `default`
   - [ ] `setup`
   - [ ] `dev`
@@ -15,14 +14,35 @@ Use this checklist when creating or reviewing a repo.
   - [ ] `check`
   - [ ] `build`
   - [ ] `clean`
-- [ ] `.gitignore` covers local env and shell artifacts
-- [ ] `AGENTS.md` exists and is non-empty
+- [ ] `.gitignore` covers local environment and database artifacts
+- [ ] `AGENTS.md` describes repository-specific conventions
+- [ ] README command examples match the real `justfile` targets
 
-## Consistency
-- [ ] README command examples match real `justfile` targets
-- [ ] Project `opencode.json` is additive (no duplicated global policy text)
-- [ ] Project `.nvim.lua` contains repo-specific behavior only
+## MCP Contract
 
-## Optional but Recommended
-- [ ] `flake.lock` committed for reproducible tool versions
-- [ ] Language-specific tool config files are present (`pyproject.toml`, `analysis_options.yaml`, `eslint.config.*`, etc.)
+- [ ] Server runs standalone through a generic MCP host
+- [ ] Legacy MCP behavior is rejected unless explicitly required
+- [ ] Every tool has strict input validation
+- [ ] Every structured result has an output schema
+- [ ] Application failures use MCP error semantics consistently
+- [ ] Mutations expose explicit side effects and approval requirements
+- [ ] Long-running work uses task semantics rather than blocking tool calls
+- [ ] Results include subject references, provenance, and limitations where applicable
+- [ ] No tool depends on Viewer-only state
+- [ ] Domain logic does not duplicate another server's source of truth
+
+## Engineering Intelligence Contract
+
+- [ ] Result profiles are documented when using the shared contract
+- [ ] Geometry, document, or requirement subjects are revision-scoped
+- [ ] Evidence can be rendered or inspected by a capable host
+- [ ] Durable mutations identify affected objects and source evidence
+- [ ] Viewer-specific presentation is optional, not required for server correctness
+
+## Security And Reliability
+
+- [ ] Local versus remote data handling is documented
+- [ ] Sensitive inputs and outputs are treated as untrusted or confidential
+- [ ] Failure, cancellation, and retry behavior are tested
+- [ ] Contract fixtures cover representative valid and invalid results
+- [ ] Database writes and audit records are atomic where required

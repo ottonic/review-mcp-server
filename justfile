@@ -2,25 +2,25 @@ default:
 	just --list
 
 setup:
-	@echo "TODO: define project setup"
+	npm install
 
 dev:
-	@echo "TODO: define project dev command"
+	npm run dev
 
 fmt:
-	@echo "TODO: define project formatting"
+	npx --yes prettier@3 --check src test package.json
 
 lint:
-	@echo "TODO: define project lint"
+	npm run typecheck
 
 test:
-	@echo "TODO: define project tests"
+	npm test
 
 check: fmt lint test
 	@echo "Check completed"
 
 build:
-	@echo "TODO: define project build"
+	npm run build
 
 clean:
-	@echo "TODO: define project cleanup"
+	rm -rf dist
