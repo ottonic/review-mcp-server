@@ -42,10 +42,14 @@ function tool(name: string) {
   return async (args: Record<string, unknown>) => {
     const normalized =
       name === "set_entity_metadata"
-        ? { mode: "replace", source: "user", ...args }
+        ? { modelRevision: "test-revision", mode: "replace", source: "user", evidenceIds: [], ...args }
         : name === "query_entity_metadata"
-          ? { limit: 100, offset: 0, ...args }
-          : args;
+          ? { modelRevision: "test-revision", limit: 100, offset: 0, ...args }
+          : name === "get_entity_metadata"
+            ? { modelRevision: "test-revision", ...args }
+            : name === "clear_entity_metadata"
+              ? { modelRevision: "test-revision", ...args }
+              : args;
     return server._registeredTools[name].handler(normalized);
   };
 }
@@ -124,6 +128,34 @@ test("replace and append preserve omitted names", async () => {
   );
 });
 
+test("metadata is isolated by model revision and preserves evidence references", async () => {
+  await tool("set_entity_metadata")({
+    entityId: "part-1",
+    modelRevision: "revision-a",
+    note: "old volume",
+    evidenceIds: ["evidence-old"],
+  });
+  await tool("set_entity_metadata")({
+    entityId: "part-1",
+    modelRevision: "revision-b",
+    note: "new volume",
+    evidenceIds: ["evidence-new"],
+  });
+
+  const oldRecord = await tool("get_entity_metadata")({
+    entityIds: ["part-1"],
+    modelRevision: "revision-a",
+  });
+  const newRecord = await tool("get_entity_metadata")({
+    entityIds: ["part-1"],
+    modelRevision: "revision-b",
+  });
+  assert.equal((oldRecord as any).structuredContent.entityMetadata[0].note, "old volume");
+  assert.deepEqual((oldRecord as any).structuredContent.entityMetadata[0].evidenceIds, ["evidence-old"]);
+  assert.equal((newRecord as any).structuredContent.entityMetadata[0].note, "new volume");
+  assert.deepEqual((newRecord as any).structuredContent.entityMetadata[0].evidenceIds, ["evidence-new"]);
+});
+
 test("clear removes metadata and records an audit trail atomically", async () => {
   await tool("set_entity_metadata")({ entityId: "part-1", note: "to clear" });
   const result = await tool("clear_entity_metadata")({
@@ -152,9 +184,9 @@ test("clear removes metadata and records an audit trail atomically", async () =>
     const db = getDb();
     db.exec("BEGIN IMMEDIATE");
     try {
-      db.prepare(
-        "INSERT INTO entity_metadata (entity_id, note, source) VALUES (?, ?, ?)",
-      ).run("rollback", "temporary", "user");
+        db.prepare(
+          "INSERT INTO entity_metadata (subject_key, entity_id, model_revision, note, source) VALUES (?, ?, ?, ?, ?)",
+        ).run("test-revision::rollback", "rollback", "test-revision", "temporary", "user");
       throw new Error("force rollback");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -180,6 +212,7 @@ test("database reset isolates paths", async () => {
     (
       (await other._registeredTools.get_entity_metadata.handler({
         entityIds: ["only-a"],
+        modelRevision: "test-revision",
       })) as any
     ).structuredContent,
     { entityMetadata: [] },
