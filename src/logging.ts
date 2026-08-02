@@ -19,5 +19,15 @@ export function logEvent(
   fields: Record<string, unknown> = {},
   message?: string,
 ): void {
+  if (process.env.CAD_TRACE_FORMAT === 'human') {
+    const details = Object.entries(fields)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
+      .join(' ');
+    process.stderr.write(
+      `[review-mcp] ${event}${details ? ` ${details}` : ''}${message ? ` ${message}` : ''}\n`,
+    );
+    return;
+  }
   logger.info({ event, ...fields }, message);
 }
