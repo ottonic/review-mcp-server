@@ -8,7 +8,7 @@ import { getDb } from "./db.js";
 import pkg from "../package.json" with { type: "json" };
 import { logEvent } from "./logging.js";
 import { PROMPTS } from "./prompts.js";
-import { fileRevision, subjectReference } from "./revision.js";
+import { fileRevision, fileExists, subjectReference } from "./revision.js";
 
 export async function runTool<T>(fn: () => Promise<T>, tool = "unknown") {
   const startedAt = Date.now();
@@ -51,6 +51,25 @@ const REVIEW_CAPABILITY_MANIFEST = {
   requiredInputs: ["filePath"],
   sideEffects: ["review_write"],
   dataHandling: { processing: "local", persistence: "sqlite" },
+  // This server also carries 8 engineering workflow prompts (analyze_part,
+  // resume_part_context, check_thickness, check_moldability, draft_audit,
+  // measure_clearance, compare_iterations, design_review). Each prompt reads
+  // geometry facts from the companion cad-mcp server and, when run with
+  // note_mode=save, writes review records through this server's remember tool.
+  prompts: [
+    "analyze_part",
+    "resume_part_context",
+    "check_thickness",
+    "check_moldability",
+    "draft_audit",
+    "measure_clearance",
+    "compare_iterations",
+    "design_review",
+  ],
+  crossServer: {
+    reads: ["cad-mcp: inspect, find_entities, measure, diff"],
+    writes: ["review_write on note_mode=save"],
+  },
 };
 
 type ReviewRow = {
@@ -182,7 +201,8 @@ export function createServer() {
       description:
         "Retrieve saved reviews for a STEP file, optionally filtered by an entity, free-text search, or tags. " +
         "Returns every review as a portable block (kind, name, entities, note, tags, revision). " +
-        "Use early in a conversation to restore persistent context about a part.",
+        "Use early in a conversation to restore persistent context about a part. " +
+        "Fails with a file_not_found error when the STEP file does not exist, so a misspelled path is not mistaken for a part with no reviews.",
       inputSchema: z.object({
         file_path: z.string().min(1).describe("File path. The STEP file whose reviews to retrieve."),
         entity_id: z.string().optional().describe("If set, only return reviews that include this entity (e.g. 'face:2')."),
@@ -199,6 +219,13 @@ export function createServer() {
     },
     async ({ file_path, entity_id, search, tags, limit, offset }) =>
       runTool(async () => {
+        if (!fileExists(file_path)) {
+          throw new Error(
+            "file_not_found: No STEP file at " +
+              resolve(file_path) +
+              ". recall returns saved reviews for an existing part; a misspelled path is not the same as a part with no reviews.",
+          );
+        }
         const db = getDb();
         const params: (string | number)[] = [];
         const clauses: string[] = ["source_file = ?"];

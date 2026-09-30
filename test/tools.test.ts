@@ -102,6 +102,15 @@ test("recall filters by entity, search, and tags; returns current_revision", asy
   assert.equal(bySearch.reviews[0].name, "bolt holes");
 });
 
+test("recall fails loud when the STEP file does not exist", async () => {
+  const missing = join(dir, "does-not-exist.step");
+  const result = await recall(missing)({});
+  assert.equal(result.isError, true);
+  const text = result.content[0].text;
+  assert.match(text, /file_not_found/);
+  assert.match(text, /does-not-exist\.step/);
+});
+
 test("forget removes a named feature by name and an anonymous note by entity", async () => {
   await remember(file)({ name: "bolt holes", entities: ["face:3"] });
   await remember(file)({ entities: ["face:7"], note: "some note" });
