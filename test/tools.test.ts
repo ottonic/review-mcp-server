@@ -1,234 +1,139 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, beforeEach, afterEach } from "node:test";
-import {
-  createServer,
-  clearOutputSchema,
-  metadataListOutputSchema,
-  metadataOutputSchema,
-  runTool,
-} from "../src/index.js";
+import { createServer, runTool } from "../src/index.js";
 import { getDb, resetDb } from "../src/db.js";
+import { fileRevision } from "../src/revision.js";
 
-type RegisteredServer = ReturnType<typeof createServer> & {
+type AnyServer = ReturnType<typeof createServer> & {
   _registeredTools: Record<
     string,
     {
       handler: (args: Record<string, unknown>) => Promise<unknown>;
-      outputSchemaJson: unknown;
     }
   >;
 };
 
-let directory: string;
-let server: RegisteredServer;
+let dir: string;
+let file: string;
+let revision: string;
+let server: AnyServer;
+
+async function writeFixture(text = "ISO-10303-21; HEADER; DATA; END-ISO-10303-21;") {
+  await writeFile(file, text);
+  revision = fileRevision(file);
+}
+
+function handler(name: string) {
+  return (args: Record<string, unknown>) => server._registeredTools[name].handler(args);
+}
+
+function resultData(result: unknown): any {
+  return (result as { structuredContent: unknown }).structuredContent;
+}
+
+function remember(filePath: string) {
+  return (args: Record<string, unknown>) =>
+    handler("remember")({ file_path: filePath, entities: ["face:0"], ...args });
+}
+function recall(filePath: string) {
+  return (args: Record<string, unknown>) => handler("recall")({ file_path: filePath, ...args });
+}
+function forget(filePath: string) {
+  return (args: Record<string, unknown>) => handler("forget")({ file_path: filePath, ...args });
+}
 
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), "review-mcp-"));
-  process.env.REVIEW_MCP_DB_PATH = join(directory, "review.db");
+  dir = await mkdtemp(join(tmpdir(), "review-mcp-"));
+  process.env.REVIEW_MCP_DB_PATH = join(dir, "review.db");
   resetDb();
-  server = createServer() as RegisteredServer;
+  file = join(dir, "part.step");
+  await writeFixture();
+  server = createServer() as AnyServer;
 });
 
 afterEach(async () => {
   resetDb();
   delete process.env.REVIEW_MCP_DB_PATH;
-  await rm(directory, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true });
 });
 
-function tool(name: string) {
-  return async (args: Record<string, unknown>) => {
-    const normalized =
-      name === "set_entity_metadata"
-        ? { modelRevision: "test-revision", mode: "replace", source: "user", evidenceIds: [], ...args }
-        : name === "query_entity_metadata"
-          ? { modelRevision: "test-revision", limit: 100, offset: 0, ...args }
-          : name === "get_entity_metadata"
-            ? { modelRevision: "test-revision", ...args }
-            : name === "clear_entity_metadata"
-              ? { modelRevision: "test-revision", ...args }
-              : args;
-    return server._registeredTools[name].handler(normalized);
-  };
-}
+test("remember saves a named feature; re-remember REPLACES it", async () => {
+  const a = await remember(file)({ name: "mounting holes", note: "4x M4", tags: ["holes"] });
+  const revA = resultData(a).review;
+  assert.equal(revA.kind, "feature");
+  assert.equal(revA.name, "mounting holes");
+  assert.equal(revA.note, "4x M4");
+  assert.deepEqual(revA.tags, ["holes"]);
+  assert.equal(revA.revision, revision);
 
-test("registered tools expose output schemas and structured output matches them", async () => {
-  assert.ok(server._registeredTools.get_entity_metadata.outputSchemaJson);
-  assert.ok(server._registeredTools.set_entity_metadata.outputSchemaJson);
-  assert.ok(server._registeredTools.query_entity_metadata.outputSchemaJson);
-  assert.ok(server._registeredTools.clear_entity_metadata.outputSchemaJson);
-
-  const result = await tool("set_entity_metadata")({
-    entityId: "part-1",
-    note: "first",
-  });
-  const structured = (result as { structuredContent: unknown })
-    .structuredContent;
-  const serialized = JSON.parse(JSON.stringify(structured));
-  metadataOutputSchema.parse(structured);
-  assert.deepEqual(
-    JSON.parse((result as { content: [{ text: string }] }).content[0].text),
-    serialized,
-  );
-  const listed = (
-    (await tool("get_entity_metadata")({ entityIds: ["part-1"] })) as {
-      structuredContent: unknown;
-    }
-  ).structuredContent;
-  metadataListOutputSchema.parse(listed);
-  assert.equal((listed as any).entityMetadata[0].note, "first");
+  const b = await remember(file)({ name: "mounting holes", note: "5x M4", tags: ["holes"] });
+  const revB = resultData(b).review;
+  assert.equal(revB.note, "5x M4");
+  assert.deepEqual(revB.tags, ["holes"]);
 });
 
-test("replace and append preserve omitted names", async () => {
-  await tool("set_entity_metadata")({
-    entityId: "part-1",
-    name: "Bracket",
-    note: "first",
-  });
-  const replaced = await tool("set_entity_metadata")({
-    entityId: "part-1",
-    note: "second",
-  });
-  assert.equal(
-    (replaced as any).structuredContent.entityMetadata.name,
-    "Bracket",
-  );
-  assert.equal(
-    (replaced as any).structuredContent.entityMetadata.note,
-    "second",
-  );
+test("remember anonymous note APPENDS to the same entity-set", async () => {
+  const note = (text: string) => remember(file)({ entities: ["face:1", "face:2"], note: text });
+  const first = resultData(await note("thin here")).review;
+  assert.equal(first.kind, "note");
+  assert.equal(first.name, undefined);
 
-  const appended = await tool("set_entity_metadata")({
-    entityId: "part-1",
-    note: "third",
-    mode: "append",
-  });
-  assert.equal(
-    (appended as any).structuredContent.entityMetadata.name,
-    "Bracket",
-  );
-  assert.equal(
-    (appended as any).structuredContent.entityMetadata.note,
-    "second\n\nthird",
-  );
-
-  const clearedName = await tool("set_entity_metadata")({
-    entityId: "part-1",
-    name: null,
-  });
-  assert.equal(
-    (clearedName as any).structuredContent.entityMetadata.name,
-    undefined,
-  );
-  assert.equal(
-    (clearedName as any).structuredContent.entityMetadata.note,
-    "second\n\nthird",
-  );
+  const second = resultData(await note("and draft issues")).review;
+  assert.equal(second.note, "thin here\n\nand draft issues");
 });
 
-test("metadata is isolated by model revision and preserves evidence references", async () => {
-  await tool("set_entity_metadata")({
-    entityId: "part-1",
-    modelRevision: "revision-a",
-    note: "old volume",
-    evidenceIds: ["evidence-old"],
-  });
-  await tool("set_entity_metadata")({
-    entityId: "part-1",
-    modelRevision: "revision-b",
-    note: "new volume",
-    evidenceIds: ["evidence-new"],
-  });
+test("recall filters by entity, search, and tags; returns current_revision", async () => {
+  await remember(file)({ name: "bolt holes", entities: ["face:3", "face:4"], note: "six M6", tags: ["mount"] });
+  await remember(file)({ entities: ["face:3"], note: "recessed" });
 
-  const oldRecord = await tool("get_entity_metadata")({
-    entityIds: ["part-1"],
-    modelRevision: "revision-a",
-  });
-  const newRecord = await tool("get_entity_metadata")({
-    entityIds: ["part-1"],
-    modelRevision: "revision-b",
-  });
-  assert.equal((oldRecord as any).structuredContent.entityMetadata[0].note, "old volume");
-  assert.deepEqual((oldRecord as any).structuredContent.entityMetadata[0].evidenceIds, ["evidence-old"]);
-  assert.equal((newRecord as any).structuredContent.entityMetadata[0].note, "new volume");
-  assert.deepEqual((newRecord as any).structuredContent.entityMetadata[0].evidenceIds, ["evidence-new"]);
+  const all = resultData(await recall(file)({}));
+  assert.equal(all.reviews.length, 2);
+  assert.equal(all.current_revision, revision);
+
+  const byEntity = resultData(await recall(file)({ entity_id: "face:4" }));
+  assert.equal(byEntity.reviews.length, 1);
+  assert.equal(byEntity.reviews[0].name, "bolt holes");
+
+  const bySearch = resultData(await recall(file)({ search: "six m6" }));
+  assert.equal(bySearch.reviews.length, 1);
+  assert.equal(bySearch.reviews[0].name, "bolt holes");
 });
 
-test("clear removes metadata and records an audit trail atomically", async () => {
-  await tool("set_entity_metadata")({ entityId: "part-1", note: "to clear" });
-  const result = await tool("clear_entity_metadata")({
-    entityId: "part-1",
-    clearedBy: "reviewer",
-  });
-  assert.deepEqual(clearOutputSchema.parse((result as any).structuredContent), {
-    entityId: "part-1",
-    cleared: true,
-  });
-  assert.deepEqual(
-    ((await tool("get_entity_metadata")({ entityIds: ["part-1"] })) as any)
-      .structuredContent,
-    { entityMetadata: [] },
-  );
-  assert.equal(
-    getDb()
-      .prepare(
-        "SELECT COUNT(*) AS count FROM review_trail WHERE action = ? AND created_by = ?",
-      )
-      .get("clear_entity_metadata", "reviewer").count,
-    1,
-  );
+test("forget removes a named feature by name and an anonymous note by entity", async () => {
+  await remember(file)({ name: "bolt holes", entities: ["face:3"] });
+  await remember(file)({ entities: ["face:7"], note: "some note" });
 
-  assert.throws(() => {
-    const db = getDb();
-    db.exec("BEGIN IMMEDIATE");
-    try {
-        db.prepare(
-          "INSERT INTO entity_metadata (subject_key, entity_id, model_revision, note, source) VALUES (?, ?, ?, ?, ?)",
-        ).run("test-revision::rollback", "rollback", "test-revision", "temporary", "user");
-      throw new Error("force rollback");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }, /force rollback/);
-  assert.equal(
-    getDb()
-      .prepare(
-        "SELECT COUNT(*) AS count FROM entity_metadata WHERE entity_id = ?",
-      )
-      .get("rollback").count,
-    0,
-  );
+  const delNamed = resultData(await forget(file)({ name: "bolt holes" }));
+  assert.equal(delNamed.deleted, true);
+
+  let afterNamed = resultData(await recall(file)({}));
+  assert.equal(afterNamed.reviews.length, 1);
+
+  const delNote = resultData(await forget(file)({ entity_id: "face:7" }));
+  assert.equal(delNote.deleted, true);
+  let afterNote = resultData(await recall(file)({}));
+  assert.equal(afterNote.reviews.length, 0);
 });
 
-test("database reset isolates paths", async () => {
-  await tool("set_entity_metadata")({ entityId: "only-a", note: "A" });
-  resetDb();
-  process.env.REVIEW_MCP_DB_PATH = join(directory, "other.db");
-  const other = createServer() as RegisteredServer;
-  assert.deepEqual(
-    (
-      (await other._registeredTools.get_entity_metadata.handler({
-        entityIds: ["only-a"],
-        modelRevision: "test-revision",
-      })) as any
-    ).structuredContent,
-    { entityMetadata: [] },
-  );
+test("revision changes mark stale reviews", async () => {
+  await remember(file)({ name: "old volume", note: "v1" });
+  await writeFixture("ISO-10303-21; DATA; DIFFERENT;");
+  const revision2 = fileRevision(file);
+
+  const result = resultData(await recall(file)({}));
+  assert.equal(result.current_revision, revision2);
+  assert.equal(result.reviews[0].stale, true);
 });
 
-test("runTool returns MCP text and structured output, and errors remain errors", async () => {
-  const result = await runTool(async () => ({ ok: true }));
-  assert.deepEqual(result.structuredContent, { ok: true });
-  assert.equal(result.content[0].text, '{\n  "ok": true\n}');
-  assert.equal(
-    (
-      await runTool(async () => {
-        throw new Error("bad");
-      })
-    ).isError,
-    true,
-  );
+test("runTool returns text + structured output and surfaces errors", async () => {
+  const ok = await runTool(async () => ({ ok: true }), "t");
+  assert.deepEqual(ok.structuredContent, { ok: true });
+  assert.equal(ok.content[0].text, '{\n  "ok": true\n}');
+  const bad = await runTool(async () => {
+    throw new Error("boom");
+  }, "t");
+  assert.equal(bad.isError, true);
 });

@@ -7,6 +7,8 @@ import { resolve } from "node:path";
 import { getDb } from "./db.js";
 import pkg from "../package.json" with { type: "json" };
 import { logEvent } from "./logging.js";
+import { PROMPTS } from "./prompts.js";
+import { fileRevision, subjectReference } from "./revision.js";
 
 export async function runTool<T>(fn: () => Promise<T>, tool = "unknown") {
   const startedAt = Date.now();
@@ -29,291 +31,244 @@ export async function runTool<T>(fn: () => Promise<T>, tool = "unknown") {
 }
 
 const READ_ONLY = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
+  readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true,
 } as const;
 const WRITE = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: false,
+  readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true,
 } as const;
-const metadataSource = z.enum(["user", "ai", "tool"]);
-const updateMode = z.enum(["replace", "append"]);
-const modelRevision = z.string().min(1);
-const evidenceIds = z.array(z.string().min(1)).default([]);
-export const metadataSchema = z.object({
-  entityId: z.string(),
-  modelRevision,
-  name: z.string().optional(),
-  note: z.string(),
-  source: metadataSource,
-  evidenceIds,
-  createdAt: z.string(),
-  updatedAt: z.string().optional(),
-});
-export const metadataListOutputSchema = z.object({
-  entityMetadata: z.array(metadataSchema),
-});
-export const metadataOutputSchema = z.object({
-  entityMetadata: metadataSchema,
-});
-export const clearOutputSchema = z.object({
-  entityId: z.string(),
-  cleared: z.literal(true),
-});
+const DELETE_WRITE = {
+  readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true,
+} as const;
 
 const REVIEW_CAPABILITY_MANIFEST = {
   capabilityId: "review-memory",
   version: pkg.version,
   title: "Review Memory",
   domain: "engineering-memory",
-  workflows: ["annotate", "recall", "search"],
-  subjects: ["geometry", "review"],
-  resultKinds: ["facts"],
-  requiredInputs: ["subjectReference"],
+  workflows: ["remember", "recall", "forget"],
+  subjects: ["geometry"],
+  resultKinds: ["reviews"],
+  requiredInputs: ["filePath"],
   sideEffects: ["review_write"],
   dataHandling: { processing: "local", persistence: "sqlite" },
 };
 
-type MetadataRow = {
-  subject_key: string;
-  entity_id: string;
-  model_revision: string;
+type ReviewRow = {
+  review_key: string;
+  source_file: string;
   name: string | null;
+  entity_ids: string;
   note: string;
-  source: "user" | "ai" | "tool";
-  evidence_ids: string;
+  tags: string;
+  author: string;
+  model_revision: string;
   created_at: string;
-  updated_at: string | null;
+  updated_at: string;
 };
 
-function rowToMetadata(row: MetadataRow) {
+// A named review is a FEATURE keyed by (source_file, name). An unnamed review
+// is a NOTE anchored to an entity set, keyed by a stable JSON of sorted ids.
+export function namedKey(sourceFile: string, name: string): string {
+  return sourceFile + "|" + name;
+}
+export function anonymousKey(sourceFile: string, entityIds: string[]): string {
+  const sorted = [...entityIds].sort();
+  return sourceFile + "|@" + JSON.stringify(sorted);
+}
+function normalizeTags(tags: string[] | undefined): string[] {
+  return [...new Set((tags ?? []).map((t) => t.trim()).filter((t) => t.length > 0).map((t) => t.replace(/^#/, "")))];
+}
+function dedupe(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+// Shared output schema: one revision-aware "review" block.
+const modelRefOut = z.object({ source: z.string(), revision: z.string(), units: z.string().optional() });
+const subjectOut = z.object({
+  type: z.literal("geometry"), model: modelRefOut, entityId: z.string(), kind: z.string(),
+  locator: z.record(z.string(), z.unknown()).optional(),
+});
+const reviewOut = z.object({
+  kind: z.enum(["feature", "note"]),
+  name: z.string().optional(),
+  entities: z.array(z.string()),
+  subjects: z.array(subjectOut).default([]),
+  note: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+  revision: z.string(),
+  stale: z.boolean().optional(),
+  updatedAt: z.string().optional(),
+});
+
+// Convert a DB row to the portable review shape.
+function rowToReview(row: ReviewRow, currentRevision?: string) {
+  const ids = JSON.parse(row.entity_ids) as string[];
+  const tags = JSON.parse(row.tags) as string[];
   return {
-    entityId: row.entity_id,
-    modelRevision: row.model_revision,
+    kind: row.name ? "feature" : "note",
     name: row.name ?? undefined,
-    note: row.note,
-    source: row.source,
-    evidenceIds: JSON.parse(row.evidence_ids) as string[],
-    createdAt: row.created_at,
+    entities: ids,
+    subjects: ids.map((id) => subjectReference(row.source_file, id)),
+    note: row.note || undefined,
+    tags,
+    revision: row.model_revision,
+    stale: currentRevision ? row.model_revision !== currentRevision : undefined,
     updatedAt: row.updated_at,
   };
-}
-
-function subjectKey(entityId: string, revision: string): string {
-  return `${revision}::${entityId}`;
-}
-
-export function inTransaction<T>(
-  db: ReturnType<typeof getDb>,
-  action: () => T,
-): T {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = action();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
 }
 
 export function createServer() {
   const server = new McpServer(
     { name: "review-mcp", version: pkg.version },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, prompts: {} } },
   );
 
   server.registerTool(
-    "get_entity_metadata",
+    "remember",
     {
-      description: "Get name/note metadata records for exact CAD entity IDs.",
-      inputSchema: z
-        .object({
-          entityIds: z.array(z.string()).min(1).max(500),
-          modelRevision,
-        })
-        .strict(),
-      outputSchema: metadataListOutputSchema,
-      annotations: READ_ONLY,
-    },
-    async ({ entityIds, modelRevision }) =>
-      runTool(async () => {
-        const db = getDb();
-        const rows = db
-          .prepare(
-            `SELECT subject_key, entity_id, model_revision, name, note, source, evidence_ids, created_at, updated_at
-        FROM entity_metadata
-        WHERE model_revision = ? AND entity_id IN (${entityIds.map(() => "?").join(",")})`,
-          )
-          .all(modelRevision, ...entityIds) as unknown as MetadataRow[];
-        return { entityMetadata: rows.map(rowToMetadata) };
-      }, "get_entity_metadata"),
-  );
-
-  server.registerTool(
-    "set_entity_metadata",
-    {
+      title: "Remember a Review",
       description:
-        "Create or update one CAD entity metadata record with an optional readable name and one note field.",
-      inputSchema: z
-        .object({
-          entityId: z.string().min(1),
-          modelRevision,
-          name: z.string().nullable().optional(),
-          note: z.string().optional(),
-          mode: updateMode.default("replace"),
-          source: metadataSource.default("user"),
-          evidenceIds,
-          updatedBy: z.string().optional(),
-        })
-        .strict(),
-      outputSchema: metadataOutputSchema,
+        "Save a durable review about geometry: a semantic feature (give it a name, e.g. 'mounting holes') or a plain note (no name). " +
+        "Re-remembering a named feature REPLACES it (use this to correct the AI). Re-remembering the same entities without a name APPENDS facts. " +
+        "The more you save, the more the system understands the part across sessions.",
+      inputSchema: z.object({
+        file_path: z.string().min(1).describe("File path. The STEP file this review belongs to."),
+        entities: z.array(z.string()).min(1).describe("Geometry this review refers to, e.g. ['face:26','face:27','face:28']."),
+        name: z.string().optional().describe("Optional feature name (a semantic, reusable label). Provide it when this is a named group like 'mounting holes' or 'bottom face'; omit for a plain note."),
+        note: z.string().optional().describe("Prose about the geometry. What does it do, what did we decide, what should we remember?"),
+        tags: z.array(z.string()).optional().describe("Searchable tags (without '#'), e.g. ['holes','mount']."),
+      }).strict(),
+      outputSchema: z.object({ review: reviewOut, created: z.literal(true) }),
       annotations: WRITE,
     },
-    async ({ entityId, modelRevision, name, note, mode, source, evidenceIds, updatedBy }) =>
+    async ({ file_path, entities, name, note, tags }) =>
       runTool(async () => {
         const db = getDb();
-        let row: MetadataRow | undefined;
-        inTransaction(db, () => {
-          const existing = db
-            .prepare(
-              "SELECT name, note FROM entity_metadata WHERE subject_key = ?",
-            )
-            .get(subjectKey(entityId, modelRevision)) as { name: string | null; note: string } | undefined;
-          const nextNote =
-            note === undefined
-              ? (existing?.note ?? "")
-              : mode === "append" && existing?.note.trim()
-                ? `${existing.note.trim()}\n\n${note.trim()}`
-                : note;
-          db.prepare(
-            `INSERT INTO entity_metadata (subject_key, entity_id, model_revision, name, note, source, evidence_ids)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(subject_key) DO UPDATE SET
-            name = excluded.name,
-            note = excluded.note,
-            source = excluded.source,
-            evidence_ids = excluded.evidence_ids,
-            updated_at = datetime('now')`,
-          ).run(
-            subjectKey(entityId, modelRevision),
-            entityId,
-            modelRevision,
-            name === undefined ? (existing?.name ?? null) : name,
-            nextNote,
-            source,
-            JSON.stringify(evidenceIds),
-          );
-          db.prepare(
-            "INSERT INTO review_trail (action, entity_id, detail, created_by, model_revision, evidence_ids) VALUES (?, ?, ?, ?, ?, ?)",
-          ).run(
-            "set_entity_metadata",
-            entityId,
-            JSON.stringify({ entityId, modelRevision, name, note, mode, source, evidenceIds }),
-            updatedBy ?? source,
-            modelRevision,
-            JSON.stringify(evidenceIds),
-          );
-          row = db
-            .prepare(
-              `SELECT subject_key, entity_id, model_revision, name, note, source, evidence_ids, created_at, updated_at
-          FROM entity_metadata WHERE subject_key = ?`,
-            )
-            .get(subjectKey(entityId, modelRevision)) as unknown as MetadataRow;
-        });
-        if (!row) throw new Error("Metadata row was not written");
-        return { entityMetadata: rowToMetadata(row) };
-      }, "set_entity_metadata"),
+        const revision = fileRevision(file_path);
+        const tagList = normalizeTags(tags);
+        const isNamed = !!name && name.trim().length > 0;
+        const key = isNamed ? namedKey(file_path, name!.trim()) : anonymousKey(file_path, entities);
+        // For a named feature: replace. For an anonymous note: append to an existing note on the same entity set.
+        let noteText = note ?? "";
+        if (!isNamed) {
+          const existing = db.prepare("SELECT note, tags FROM reviews WHERE review_key = ?").get(key) as { note: string; tags: string } | undefined;
+          if (existing && note) {
+            const prior = existing.note.trim();
+            noteText = prior ? prior + "\n\n" + note.trim() : note.trim();
+          }
+          if (existing) {
+            const existingTags = JSON.parse(existing.tags) as string[];
+            const merged = dedupe([...existingTags, ...tagList]);
+            const fn = JSON.stringify(merged);
+            db.prepare(
+              "UPDATE reviews SET note = ?, tags = ?, model_revision = ?, updated_at = datetime('now') WHERE review_key = ?",
+            ).run(noteText, fn, revision, key);
+            return { review: rowToReview(db.prepare("SELECT * FROM reviews WHERE review_key = ?").get(key) as ReviewRow, revision), created: true };
+          }
+        }
+        db.prepare(
+          "INSERT OR REPLACE INTO reviews (review_key, source_file, name, entity_ids, note, tags, author, model_revision) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(key, file_path, isNamed ? name!.trim() : null, JSON.stringify(entities), noteText, JSON.stringify(tagList), "ai", revision);
+        const row = db.prepare("SELECT * FROM reviews WHERE review_key = ?").get(key) as ReviewRow;
+        return { review: rowToReview(row, revision), created: true };
+      }, "remember"),
   );
 
   server.registerTool(
-    "query_entity_metadata",
+    "recall",
     {
-      description: "Search CAD entity metadata by text or hashtag.",
-      inputSchema: z
-        .object({
-          entityIds: z.array(z.string()).min(1).max(500).optional(),
-          modelRevision,
-          search: z.string().optional(),
-          hashtags: z.array(z.string()).optional(),
-          limit: z.number().int().min(1).max(500).default(100),
-          offset: z.number().int().min(0).default(0),
-        })
-        .strict(),
-      outputSchema: metadataListOutputSchema,
+      title: "Recall Reviews",
+      description:
+        "Retrieve saved reviews for a STEP file, optionally filtered by an entity, free-text search, or tags. " +
+        "Returns every review as a portable block (kind, name, entities, note, tags, revision). " +
+        "Use early in a conversation to restore persistent context about a part.",
+      inputSchema: z.object({
+        file_path: z.string().min(1).describe("File path. The STEP file whose reviews to retrieve."),
+        entity_id: z.string().optional().describe("If set, only return reviews that include this entity (e.g. 'face:2')."),
+        search: z.string().optional().describe("Free-text match across feature names and note bodies (case-insensitive)."),
+        tags: z.array(z.string()).optional().describe("Only return reviews carrying all these tags (without '#')."),
+        limit: z.number().int().min(1).max(500).default(100).optional().describe("Max reviews. Default 100."),
+        offset: z.number().int().min(0).default(0).optional().describe("Skip N reviews for pagination."),
+      }).strict(),
+      outputSchema: z.object({
+        reviews: z.array(reviewOut).default([]),
+        current_revision: z.string().optional(),
+      }),
       annotations: READ_ONLY,
     },
-    async ({ entityIds, modelRevision, search, hashtags, limit, offset }) =>
+    async ({ file_path, entity_id, search, tags, limit, offset }) =>
       runTool(async () => {
         const db = getDb();
         const params: (string | number)[] = [];
-        const clauses: string[] = [];
-        clauses.push("model_revision = ?");
-        params.push(modelRevision);
-        if (entityIds?.length) {
-          clauses.push(`entity_id IN (${entityIds.map(() => "?").join(",")})`);
-          params.push(...entityIds);
+        const clauses: string[] = ["source_file = ?"];
+        params.push(file_path);
+        if (entity_id) {
+          clauses.push("entity_ids LIKE ?");
+          params.push("%" + entity_id + "%");
         }
-        if (search?.trim()) {
-          clauses.push("(entity_id LIKE ? OR name LIKE ? OR note LIKE ?)");
-          const term = `%${search.trim()}%`;
-          params.push(term, term, term);
+        if (search && search.trim()) {
+          clauses.push("(COALESCE(name,'') LIKE ? OR note LIKE ?)");
+          const term = "%" + search.trim() + "%";
+          params.push(term, term);
         }
-        for (const hashtag of hashtags ?? []) {
-          clauses.push("note LIKE ?");
-          params.push(`%#${hashtag.replace(/^#/, "")}%`);
+        const tagList = normalizeTags(tags);
+        for (const tag of tagList) {
+          clauses.push("tags LIKE ?");
+          params.push("%\"" + tag + "\"%");
         }
-        const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-        params.push(limit, offset);
-        const rows = db
-          .prepare(
-            `SELECT subject_key, entity_id, model_revision, name, note, source, evidence_ids, created_at, updated_at
-        FROM entity_metadata ${where}
-        ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-          )
-          .all(...params) as unknown as MetadataRow[];
-        return { entityMetadata: rows.map(rowToMetadata) };
-      }, "query_entity_metadata"),
+        const where = "WHERE " + clauses.join(" AND ");
+        params.push(limit ?? 100, offset ?? 0);
+        const currentRevision = fileRevision(file_path);
+        const rows = db.prepare(
+          "SELECT review_key, source_file, name, entity_ids, note, tags, author, model_revision, created_at, updated_at " +
+          "FROM reviews " + where + " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        ).all(...params) as unknown as ReviewRow[];
+        return {
+          reviews: rows.map((row) => rowToReview(row, currentRevision)),
+          current_revision: currentRevision,
+        };
+      }, "recall"),
   );
 
   server.registerTool(
-    "clear_entity_metadata",
+    "forget",
     {
-      description: "Clear the metadata record for one CAD entity.",
-      inputSchema: z
-        .object({
-          entityId: z.string().min(1),
-          modelRevision,
-          clearedBy: z.string().optional(),
-        })
-        .strict(),
-      outputSchema: clearOutputSchema,
-      annotations: WRITE,
+      title: "Forget a Review",
+      description:
+        "Delete a saved review. Pass the feature name to remove a named feature, or an entity id to remove anonymous notes attached to that entity. Idempotent. Use only when the user explicitly asks to remove it.",
+      inputSchema: z.object({
+        file_path: z.string().min(1).describe("File path. The STEP file whose review to delete."),
+        name: z.string().optional().describe("Feature name to remove (when a named feature)."),
+        entity_id: z.string().optional().describe("Entity whose anonymous notes to remove (when not named)."),
+      }).strict(),
+      outputSchema: z.object({
+        deleted: z.literal(true),
+        name: z.string().optional(),
+        entity_id: z.string().optional(),
+      }),
+      annotations: DELETE_WRITE,
     },
-    async ({ entityId, modelRevision, clearedBy }) =>
+    async ({ file_path, name, entity_id }) =>
       runTool(async () => {
         const db = getDb();
-        inTransaction(db, () => {
-          db.prepare("DELETE FROM entity_metadata WHERE subject_key = ?").run(
-            subjectKey(entityId, modelRevision),
-          );
-          db.prepare(
-            "INSERT INTO review_trail (action, entity_id, detail, created_by, model_revision, evidence_ids) VALUES (?, ?, ?, ?, ?, ?)",
-          ).run(
-            "clear_entity_metadata",
-            entityId,
-            JSON.stringify({ entityId, modelRevision }),
-            clearedBy ?? "user",
-            modelRevision,
-            "[]",
-          );
-        });
-        return { entityId, cleared: true };
-      }, "clear_entity_metadata"),
+        if (name) {
+          db.prepare("DELETE FROM reviews WHERE review_key = ?").run(namedKey(file_path, name));
+        } else if (entity_id) {
+          // Delete anonymous reviews containing this entity (note: entity_ids is a JSON array in the DB).
+          db.prepare("DELETE FROM reviews WHERE source_file = ? AND name IS NULL AND entity_ids LIKE ?").run(file_path, "%" + entity_id + "%");
+        }
+        return { deleted: true, name, entity_id };
+      }, "forget"),
   );
+
+  for (const prompt of PROMPTS) {
+    server.registerPrompt(
+      prompt.name,
+      { title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
+      (args: any) => prompt.handler(args),
+    );
+  }
 
   server.registerResource(
     "review-memory-capability",
@@ -325,13 +280,7 @@ export function createServer() {
       annotations: { audience: ["user", "assistant"], priority: 0.8 },
     },
     async (uri) => ({
-      contents: [
-        {
-          uri: uri.href,
-          mimeType: "application/json",
-          text: JSON.stringify(REVIEW_CAPABILITY_MANIFEST),
-        },
-      ],
+      contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(REVIEW_CAPABILITY_MANIFEST) }],
     }),
   );
 
@@ -339,9 +288,6 @@ export function createServer() {
   return server;
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   serveStdio(createServer, { legacy: "reject" });
 }

@@ -21,67 +21,30 @@ export function resetDb(): void {
   db = null;
 }
 
+// Clean, unified knowledge base. A "review" is one durable unit of meaning
+// tied to geometry: entities[] (the substrate) + optional name (a semantic
+// feature) + optional note + tags[].
+//
+// Identity rules:
+//   - A NAMED review (name set) is a FEATURE and is keyed by (source_file, name).
+//     Re-remembering the same name REPLACES it (supports the viewer's
+//     correct-the-AI loop).
+//   - An UNNAMED review (name NULL) is a NOTE anchored to an entity set.
+//     It stores the resolved entities as a stable JSON key so re-remembering
+//     the same entity with no name APPENDS facts.
 function migrate(db: DatabaseSync): void {
-  const existingColumns = db
-    .prepare("PRAGMA table_info(entity_metadata)")
-    .all() as Array<{ name: string }>;
-  if (existingColumns.length && !existingColumns.some((column) => column.name === "subject_key")) {
-    db.exec("ALTER TABLE entity_metadata RENAME TO entity_metadata_legacy");
-  }
-  db.exec(`CREATE TABLE IF NOT EXISTS entity_metadata (
-    subject_key TEXT PRIMARY KEY,
-    entity_id TEXT NOT NULL,
-    model_revision TEXT NOT NULL,
-    name TEXT,
+  db.exec(`CREATE TABLE IF NOT EXISTS reviews (
+    review_key TEXT PRIMARY KEY,           -- source_file|name   OR   source_file|@entities-json
+    source_file TEXT NOT NULL,
+    name TEXT,                             -- NULL for anonymous notes
+    entity_ids TEXT NOT NULL,              -- JSON array
     note TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL CHECK (source IN ('user','ai','tool')),
-    evidence_ids TEXT NOT NULL DEFAULT '[]',
+    tags TEXT NOT NULL DEFAULT '[]',
+    author TEXT NOT NULL DEFAULT 'ai',
+    model_revision TEXT NOT NULL,          -- sha256 content hash at write time
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
-  db.exec(`CREATE TABLE IF NOT EXISTS review_trail (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action TEXT NOT NULL,
-    entity_id TEXT,
-    detail TEXT DEFAULT '',
-    created_by TEXT DEFAULT 'user',
-    created_at TEXT DEFAULT (datetime('now'))
-  )`);
-  if (existingColumns.length && !existingColumns.some((column) => column.name === "subject_key")) {
-    db.exec(`INSERT INTO entity_metadata (
-      subject_key, entity_id, model_revision, name, note, source, evidence_ids, created_at, updated_at
-    )
-    SELECT entity_id, entity_id, 'legacy', name, note, source, '[]', created_at, updated_at
-    FROM entity_metadata_legacy`);
-    db.exec("DROP TABLE entity_metadata_legacy");
-  }
-  const trailColumns = db
-    .prepare("PRAGMA table_info(review_trail)")
-    .all() as Array<{ name: string }>;
-  if (trailColumns.length) {
-    if (!trailColumns.some((column) => column.name === "model_revision")) {
-      db.exec("ALTER TABLE review_trail ADD COLUMN model_revision TEXT");
-    }
-    if (!trailColumns.some((column) => column.name === "evidence_ids")) {
-      db.exec("ALTER TABLE review_trail ADD COLUMN evidence_ids TEXT NOT NULL DEFAULT '[]'");
-    }
-  }
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_entity_metadata_updated ON entity_metadata(updated_at)",
-  );
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_entity_metadata_name ON entity_metadata(name)",
-  );
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_entity_metadata_subject ON entity_metadata(entity_id, model_revision)",
-  );
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_trail_entity ON review_trail(entity_id)",
-  );
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_trail_action ON review_trail(action)",
-  );
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_trail_created ON review_trail(created_at)",
-  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_reviews_source ON reviews(source_file)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_reviews_name ON reviews(source_file, name)");
 }
