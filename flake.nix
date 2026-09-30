@@ -21,7 +21,8 @@
 		  # formatters, linters, test tools, and build tools.
 		  # Global Neovim provides editor behavior, not language tool choices.
 		  buildInputs = with pkgs; [
-
+		    nodejs_24
+		    typescript-language-server
 		  ];
         };
       }
