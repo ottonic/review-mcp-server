@@ -152,7 +152,7 @@ export function createServer() {
         "The more you save, the more the system understands the part across sessions.",
       inputSchema: z.object({
         file_path: z.string().min(1).describe("File path. The STEP file this review belongs to."),
-        entities: z.array(z.string()).min(1).describe("Geometry this review refers to, e.g. ['face:26','face:27','face:28']."),
+        entities: z.array(z.string()).min(1).describe("Geometry this review refers to, e.g. ['face:26','face:27'] or component-scoped ['component:wheel-axle/face:0']. IDs come from a cad-mcp find_faces/find_edges result."),
         name: z.string().optional().describe("Optional feature name (a semantic, reusable label). Provide it when this is a named group like 'mounting holes' or 'bottom face'; omit for a plain note."),
         note: z.string().optional().describe("Prose about the geometry. What does it do, what did we decide, what should we remember?"),
         tags: z.array(z.string()).optional().describe("Searchable tags (without '#'), e.g. ['holes','mount']."),
@@ -205,7 +205,7 @@ export function createServer() {
         "Fails with a file_not_found error when the STEP file does not exist, so a misspelled path is not mistaken for a part with no reviews.",
       inputSchema: z.object({
         file_path: z.string().min(1).describe("File path. The STEP file whose reviews to retrieve."),
-        entity_id: z.string().optional().describe("If set, only return reviews that include this entity (e.g. 'face:2')."),
+        entity_id: z.string().optional().describe("If set, only return reviews that include this entity (e.g. 'face:2' or a component-scoped 'component:wheel-axle/face:0')."),
         search: z.string().optional().describe("Free-text match across feature names and note bodies (case-insensitive)."),
         tags: z.array(z.string()).optional().describe("Only return reviews carrying all these tags (without '#')."),
         limit: z.number().int().min(1).max(500).default(100).optional().describe("Max reviews. Default 100."),
