@@ -4,6 +4,12 @@
   "description": "Local review context for CAD inspection: persist entity names and notes in SQLite and query metadata by entity, text, or hashtag.",
   "type": "module",
   "main": "dist/src/index.js",
+  "files": [
+    "dist/src",
+    "dist/package.json",
+    "!dist/**/*.map",
+    "README.md"
+  ],
   "bin": {
     "review-mcp": "dist/src/index.js"
   },
@@ -12,6 +18,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc",
+    "prepack": "npm run build",
     "dev": "tsx src/index.ts",
     "start": "node dist/src/index.js",
     "test": "tsx --test test/*.test.ts",

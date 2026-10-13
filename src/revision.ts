@@ -1,70 +1,77 @@
-import { createHash } from "node:crypto";
-import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { z } from "zod";
 
-// Revision-aware identity helpers. The cad-viewer treats a bare entity id like
-// "face:12" as ambiguous across file revisions; it resolves identity via a
-// content hash (revision) plus a typed subject reference (see
-// ENGINEERING_INTELLIGENCE_CONTRACT.md).
+export const artifactReferenceSchema = z
+  .object({
+    revision: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    uri: z.string().url().optional(),
+    format: z.literal("step"),
+    units: z.string().optional(),
+  })
+  .strict();
 
-/**
- * Resolve a path for existence checks. Returns the resolved absolute path or
- * undefined when the file does not exist or cannot be read.
- */
-export function resolvedExistingPath(filePath: string): string | undefined {
+export const subjectReferenceSchema = z
+  .object({
+    type: z.literal("geometry"),
+    artifact: artifactReferenceSchema,
+    entity: z
+      .object({
+        authority: z.literal("cad-mcp-server"),
+        idScheme: z.string().min(1),
+        id: z.string().min(1),
+        kind: z.string().min(1),
+      })
+      .strict(),
+    locator: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+export type ArtifactReference = z.output<typeof artifactReferenceSchema>;
+export type SubjectReference = z.output<typeof subjectReferenceSchema>;
+
+export function artifactKey(artifact: ArtifactReference): string {
+  return artifact.uri
+    ? new URL(artifact.uri).href
+    : `revision:${artifact.revision}`;
+}
+
+export function artifactAliases(artifact: ArtifactReference): string[] {
+  if (!artifact.uri) return [artifactKey(artifact)];
+  const uri = new URL(artifact.uri);
+  if (uri.protocol !== "file:") return [uri.href];
+  const filePath = fileURLToPath(uri);
+  return [...new Set([uri.href, filePath, resolve(filePath)])];
+}
+
+export function artifactForSource(
+  source: string,
+  revision: string,
+): ArtifactReference | undefined {
+  if (!/^sha256:[a-f0-9]{64}$/.test(revision)) return undefined;
+  let uri: string | undefined;
   try {
-    const resolved = resolve(filePath);
-    return existsSync(resolved) ? resolved : undefined;
+    uri = source.startsWith("revision:")
+      ? undefined
+      : source.includes("://")
+        ? new URL(source).href
+        : pathToFileURL(resolve(source)).href;
   } catch {
-    return undefined;
+    uri = undefined;
   }
+  return { revision, ...(uri ? { uri } : {}), format: "step", units: "mm" };
 }
 
-/**
- * True when the STEP file exists and is readable. Recall uses this to fail loud
- * on a missing or misspelled path instead of returning an empty result.
- */
-export function fileExists(filePath: string): boolean {
-  return resolvedExistingPath(filePath) !== undefined;
-}
-
-/**
- * Compute the sha256 content hash of a STEP file. Returns "unknown" if the file
- * cannot be read (so callers can still record intent without failing).
- */
-export function fileRevision(filePath: string): string {
-  const resolved = resolvedExistingPath(filePath);
-  if (resolved === undefined) return "unknown";
-  try {
-    return "sha256:" + createHash("sha256").update(readFileSync(resolved)).digest("hex");
-  } catch {
-    return "unknown";
-  }
-}
-
-/**
- * A model reference identifying the source file and its content revision.
- * Matches the viewer's modelReferenceSchema: { source, revision, units }.
- */
-export function modelReference(filePath: string, units?: string) {
-  return { source: resolve(filePath), revision: fileRevision(filePath), units };
-}
-
-/**
- * A typed subject reference matching the viewer's subjectReferenceSchema.
- * entityId is parsed into kind=face/edge/vertex/body when possible.
- */
-export function subjectReference(filePath: string, entityId: string, units?: string) {
+export function subjectReference(
+  artifact: ArtifactReference,
+  id: string,
+  idScheme: string,
+): SubjectReference {
+  const entityId = id.split("/").at(-1) ?? id;
   const kind = entityId.split(":")[0] || "entity";
   return {
     type: "geometry",
-    model: modelReference(filePath, units),
-    entityId,
-    kind,
-    locator: { entityId, kind, units },
+    artifact,
+    entity: { authority: "cad-mcp-server", idScheme, id, kind },
   };
-}
-
-export function kindOf(entityId: string): string {
-  return entityId.split(":")[0] || "entity";
 }

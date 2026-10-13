@@ -1,18 +1,12 @@
-# Project Agent Notes
+# Review MCP Contributor Instructions
 
-## Local Scope
-- This repo follows the user's global OpenCode guidance.
-- This file only defines project-level conventions.
-
-## Command Surface
-- Prefer `just` as the command interface for setup, dev, test, lint, fmt, check, and build.
-
-## Editor Tooling
-- Project flakes own language servers, formatters, linters, runtimes, and test tools.
-- Project `.nvim.lua` maps those tools to Neovim integrations when needed.
-- Do not add project language-tool choices to the global Neovim config.
-
-## Delivery Expectations
-- Implement the smallest viable change first.
-- Validate with the most relevant `just` command(s).
-- Report assumptions and deferred follow-ups clearly.
+- Keep record operations usable through a generic MCP client with no CAD file
+  access or other server required.
+- Preserve caller-supplied revisions, subject ID schemes, stale-record semantics,
+  and the distinction between named-feature replacement and anonymous-note append.
+- Keep mutations explicit, database updates atomic where required, input schemas
+  strict, and structured tool results consistent with their declared schemas.
+- Keep tests isolated from user databases; use local fixtures and temporary paths.
+- Prefer the recipes in `justfile`; run `just check` for implementation changes.
+- Keep language tooling in the project environment. Document actual command
+  behavior in [README](README.md); do not depend on personal machine configuration.

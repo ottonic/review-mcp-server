@@ -42,9 +42,24 @@ function migrate(db: DatabaseSync): void {
     tags TEXT NOT NULL DEFAULT '[]',
     author TEXT NOT NULL DEFAULT 'ai',
     model_revision TEXT NOT NULL,          -- sha256 content hash at write time
+    entity_id_scheme TEXT NOT NULL DEFAULT 'occt-topology-v1',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_reviews_source ON reviews(source_file)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_reviews_name ON reviews(source_file, name)");
+  const columns = new Set(
+    (
+      db.prepare("PRAGMA table_info(reviews)").all() as Array<{ name: string }>
+    ).map((column) => column.name),
+  );
+  if (!columns.has("entity_id_scheme")) {
+    db.exec(
+      "ALTER TABLE reviews ADD COLUMN entity_id_scheme TEXT NOT NULL DEFAULT 'occt-topology-v1'",
+    );
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_reviews_source ON reviews(source_file)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_reviews_name ON reviews(source_file, name)",
+  );
 }

@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, beforeEach, afterEach } from "node:test";
 import { createServer, runTool } from "../src/index.js";
 import { getDb, resetDb } from "../src/db.js";
-import { fileRevision } from "../src/revision.js";
+import { pathToFileURL } from "node:url";
+import {
+  artifactReferenceSchema,
+  subjectReferenceSchema,
+} from "../src/revision.js";
 
 type AnyServer = ReturnType<typeof createServer> & {
   _registeredTools: Record<
@@ -20,14 +25,27 @@ let dir: string;
 let file: string;
 let revision: string;
 let server: AnyServer;
+const scheme = "occt-topology-v1";
+function artifact(uri = pathToFileURL(file).href, rev = revision) {
+  return { uri, revision: rev, format: "step", units: "mm" };
+}
 
-async function writeFixture(text = "ISO-10303-21; HEADER; DATA; END-ISO-10303-21;") {
+async function writeFixture(
+  text = "ISO-10303-21; HEADER; DATA; END-ISO-10303-21;",
+) {
   await writeFile(file, text);
-  revision = fileRevision(file);
+  revision = `sha256:${createHash("sha256").update(text).digest("hex")}`;
+}
+
+async function hashFile(path: string) {
+  return `sha256:${createHash("sha256")
+    .update(await readFile(path))
+    .digest("hex")}`;
 }
 
 function handler(name: string) {
-  return (args: Record<string, unknown>) => server._registeredTools[name].handler(args);
+  return (args: Record<string, unknown>) =>
+    server._registeredTools[name].handler(args);
 }
 
 function resultData(result: unknown): any {
@@ -36,13 +54,26 @@ function resultData(result: unknown): any {
 
 function remember(filePath: string) {
   return (args: Record<string, unknown>) =>
-    handler("remember")({ file_path: filePath, entities: ["face:0"], ...args });
+    handler("remember")({
+      artifact: artifact(pathToFileURL(filePath).href),
+      entity_id_scheme: scheme,
+      entities: ["face:0"],
+      ...args,
+    });
 }
 function recall(filePath: string) {
-  return (args: Record<string, unknown>) => handler("recall")({ file_path: filePath, ...args });
+  return (args: Record<string, unknown>) =>
+    handler("recall")({
+      artifact: artifact(pathToFileURL(filePath).href),
+      ...args,
+    });
 }
 function forget(filePath: string) {
-  return (args: Record<string, unknown>) => handler("forget")({ file_path: filePath, ...args });
+  return (args: Record<string, unknown>) =>
+    handler("forget")({
+      artifact: artifact(pathToFileURL(filePath).href),
+      ...args,
+    });
 }
 
 beforeEach(async () => {
@@ -61,7 +92,11 @@ afterEach(async () => {
 });
 
 test("remember saves a named feature; re-remember REPLACES it", async () => {
-  const a = await remember(file)({ name: "mounting holes", note: "4x M4", tags: ["holes"] });
+  const a = await remember(file)({
+    name: "mounting holes",
+    note: "4x M4",
+    tags: ["holes"],
+  });
   const revA = resultData(a).review;
   assert.equal(revA.kind, "feature");
   assert.equal(revA.name, "mounting holes");
@@ -69,14 +104,19 @@ test("remember saves a named feature; re-remember REPLACES it", async () => {
   assert.deepEqual(revA.tags, ["holes"]);
   assert.equal(revA.revision, revision);
 
-  const b = await remember(file)({ name: "mounting holes", note: "5x M4", tags: ["holes"] });
+  const b = await remember(file)({
+    name: "mounting holes",
+    note: "5x M4",
+    tags: ["holes"],
+  });
   const revB = resultData(b).review;
   assert.equal(revB.note, "5x M4");
   assert.deepEqual(revB.tags, ["holes"]);
 });
 
 test("remember anonymous note APPENDS to the same entity-set", async () => {
-  const note = (text: string) => remember(file)({ entities: ["face:1", "face:2"], note: text });
+  const note = (text: string) =>
+    remember(file)({ entities: ["face:1", "face:2"], note: text });
   const first = resultData(await note("thin here")).review;
   assert.equal(first.kind, "note");
   assert.equal(first.name, undefined);
@@ -86,7 +126,12 @@ test("remember anonymous note APPENDS to the same entity-set", async () => {
 });
 
 test("recall filters by entity, search, and tags; returns current_revision", async () => {
-  await remember(file)({ name: "bolt holes", entities: ["face:3", "face:4"], note: "six M6", tags: ["mount"] });
+  await remember(file)({
+    name: "bolt holes",
+    entities: ["face:3", "face:4"],
+    note: "six M6",
+    tags: ["mount"],
+  });
   await remember(file)({ entities: ["face:3"], note: "recessed" });
 
   const all = resultData(await recall(file)({}));
@@ -102,13 +147,11 @@ test("recall filters by entity, search, and tags; returns current_revision", asy
   assert.equal(bySearch.reviews[0].name, "bolt holes");
 });
 
-test("recall fails loud when the STEP file does not exist", async () => {
+test("recall does not require the artifact file to be locally accessible", async () => {
   const missing = join(dir, "does-not-exist.step");
   const result = await recall(missing)({});
-  assert.equal(result.isError, true);
-  const text = result.content[0].text;
-  assert.match(text, /file_not_found/);
-  assert.match(text, /does-not-exist\.step/);
+  assert.equal(result.isError, undefined);
+  assert.equal(resultData(result).reviews.length, 0);
 });
 
 test("forget removes a named feature by name and an anonymous note by entity", async () => {
@@ -128,13 +171,48 @@ test("forget removes a named feature by name and an anonymous note by entity", a
 });
 
 test("revision changes mark stale reviews", async () => {
+  const revision1 = revision;
   await remember(file)({ name: "old volume", note: "v1" });
   await writeFixture("ISO-10303-21; DATA; DIFFERENT;");
-  const revision2 = fileRevision(file);
+  const revision2 = await hashFile(file);
 
-  const result = resultData(await recall(file)({}));
+  const result = resultData(
+    await handler("recall")({
+      artifact: artifact(pathToFileURL(file).href, revision2),
+    }),
+  );
   assert.equal(result.current_revision, revision2);
   assert.equal(result.reviews[0].stale, true);
+  assert.equal(result.reviews[0].artifact.revision, revision1);
+  assert.equal(result.reviews[0].subjects[0].artifact.revision, revision1);
+});
+
+test("anonymous notes remain scoped to artifact revision and ID scheme", async () => {
+  const old = resultData(
+    await remember(file)({ entities: ["face:0"], note: "old revision fact" }),
+  ).review;
+  const nextRevision = `sha256:${"f".repeat(64)}`;
+  const next = resultData(
+    await handler("remember")({
+      artifact: artifact(pathToFileURL(file).href, nextRevision),
+      entity_id_scheme: scheme,
+      entities: ["face:0"],
+      note: "new revision fact",
+    }),
+  ).review;
+  assert.equal(old.note, "old revision fact");
+  assert.equal(next.note, "new revision fact");
+  const recalled = resultData(
+    await handler("recall")({
+      artifact: artifact(pathToFileURL(file).href, nextRevision),
+    }),
+  );
+  assert.equal(recalled.reviews.length, 2);
+  assert.equal(
+    recalled.reviews.find((review: any) => review.note === "old revision fact")
+      .stale,
+    true,
+  );
 });
 
 test("runTool returns text + structured output and surfaces errors", async () => {
@@ -145,4 +223,28 @@ test("runTool returns text + structured output and surfaces errors", async () =>
     throw new Error("boom");
   }, "t");
   assert.equal(bad.isError, true);
+});
+
+test("accepts local ArtifactRef and SubjectRef examples", () => {
+  const artifactFixture = {
+    revision: `sha256:${"a".repeat(64)}`,
+    uri: "file:///work/part.step",
+    format: "step",
+    units: "mm",
+  };
+  const subjectFixture = {
+    type: "geometry",
+    artifact: artifactFixture,
+    entity: {
+      authority: "cad-mcp-server",
+      idScheme: "occt-topology-v1",
+      id: "face:0",
+      kind: "face",
+    },
+  };
+  assert.equal(
+    artifactReferenceSchema.safeParse(artifactFixture).success,
+    true,
+  );
+  assert.equal(subjectReferenceSchema.safeParse(subjectFixture).success, true);
 });
