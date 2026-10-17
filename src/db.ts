@@ -1,17 +1,17 @@
-import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { DatabaseSync } from 'node:sqlite';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 let db: DatabaseSync | null = null;
 
 export function getDb(): DatabaseSync {
   if (db) return db;
-  const dbPath = resolve(process.env.REVIEW_MCP_DB_PATH ?? "./review-mcp.db");
+  const dbPath = resolve(process.env.REVIEW_MCP_DB_PATH ?? './review-mcp.db');
   const dir = dirname(dbPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA journal_mode=WAL");
-  db.exec("PRAGMA foreign_keys=ON");
+  db.exec('PRAGMA journal_mode=WAL');
+  db.exec('PRAGMA foreign_keys=ON');
   migrate(db);
   return db;
 }
@@ -47,19 +47,15 @@ function migrate(db: DatabaseSync): void {
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
   const columns = new Set(
-    (
-      db.prepare("PRAGMA table_info(reviews)").all() as Array<{ name: string }>
-    ).map((column) => column.name),
+    (db.prepare('PRAGMA table_info(reviews)').all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
   );
-  if (!columns.has("entity_id_scheme")) {
+  if (!columns.has('entity_id_scheme')) {
     db.exec(
       "ALTER TABLE reviews ADD COLUMN entity_id_scheme TEXT NOT NULL DEFAULT 'occt-topology-v1'",
     );
   }
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_reviews_source ON reviews(source_file)",
-  );
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_reviews_name ON reviews(source_file, name)",
-  );
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_source ON reviews(source_file)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_name ON reviews(source_file, name)');
 }

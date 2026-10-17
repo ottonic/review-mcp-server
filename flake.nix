@@ -1,30 +1,33 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "github:NixOS/nixpkgs/331800de5053fcebacf6813adb5db9c9dca22a0c";
   };
 
   outputs =
+    { nixpkgs, ... }:
+    let
+      systems = [ "x86_64-linux" "aarch64-darwin" ];
+      eachSystem = nixpkgs.lib.genAttrs systems;
+    in
     {
-      self,
-      nixpkgs,
-      flake-utils,
-    }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-      in
-      {
-		devShells.default = pkgs.mkShell {
-		  # Project-specific dependencies only: runtimes, language servers,
-		  # formatters, linters, test tools, and build tools.
-		  # Global Neovim provides editor behavior, not language tool choices.
-		  buildInputs = with pkgs; [
-		    nodejs_24
-		    typescript-language-server
-		  ];
-        };
-      }
-    );
+      # Node-only server: one shell is enough.
+      devShells = eachSystem (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              just
+              nodejs_24
+              typescript-language-server
+            ];
+            shellHook = ''
+              export PATH="$PWD/node_modules/.bin:$PATH"
+            '';
+          };
+        }
+      );
+    };
 }

@@ -77,16 +77,25 @@ run simulation, or decide manufacturability.
 
 ## Development
 
-The repository provides a Nix development shell (`nix develop`) and `just` recipes:
+Requires Node.js 24+ and [`just`](https://github.com/casey/just). A Nix flake and
+`.envrc` provide the toolchain; run `direnv allow` after changing either.
 
-- `just setup`: install dependencies.
-- `just dev`: run TypeScript over stdio.
-- `just build`: compile into `dist/`.
-- `just test`: exercise local record and result behavior.
-- `just fmt`: check formatting (the current recipe does not rewrite files).
-- `just lint`: TypeScript checking.
-- `just check`: formatting, typecheck, and tests.
-- `just clean`: remove compiled output, retaining the database.
+| Recipe           | Purpose                                         |
+| ---------------- | ----------------------------------------------- |
+| `just setup`     | Install dependencies.                           |
+| `just dev`       | Run TypeScript over stdio.                      |
+| `just build`     | Compile into `dist/`.                           |
+| `just test`      | Run unit tests.                                 |
+| `just lint`      | Run oxlint.                                     |
+| `just fmt`       | Rewrite formatting with Prettier.               |
+| `just fmt-check` | Verify formatting.                              |
+| `just typecheck` | Run `tsc --noEmit`.                             |
+| `just check`     | `fmt-check` + `lint` + `typecheck` + `test`.    |
+| `just clean`     | Remove compiled output, retaining the database. |
+
+Server logs go to stderr as newline-delimited pino JSON. `MCP_LOG_LEVEL`
+(`debug`|`info`|`warn`|`error`), `MCP_LOG_FORMAT=human`, and `MCP_TRACE_ID` tune
+them; secret-like fields are redacted.
 
 ## Package preparation
 

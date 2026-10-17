@@ -7,20 +7,30 @@ setup:
 dev:
 	npm run dev
 
-fmt:
-	npx --yes prettier@3 --check src test package.json
-
-lint:
-	npm run typecheck
+build:
+	npm run build
 
 test:
 	npm test
 
-check: fmt lint test
-	@echo "Check completed"
+# Native toolchain integration tests. Review is a pure SQLite/Node server and has
+# none today, so this is a documented no-op (`--passWithNoTests`).
+test-integration:
+	npm run test:integration
 
-build:
-	npm run build
+typecheck:
+	npm run typecheck
+
+lint:
+	npm run lint
+
+fmt:
+	npm run fmt
+
+fmt-check:
+	npm run fmt:check
+
+check: fmt-check lint typecheck test
 
 clean:
 	rm -rf dist
