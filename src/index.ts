@@ -62,7 +62,9 @@ export function createServer() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  const handle = serveStdio(createServer, { legacy: 'reject' });
+  // Serve the 2025-era handshake as well: stock MCP hosts negotiate
+  // 2025-11-25, and the same factory serves both eras.
+  const handle = serveStdio(createServer, { legacy: 'serve' });
   logEvent('server.started', { tools: TOOL_REGISTRY.length, protocol: PROTOCOL_VERSION });
 
   let closing: Promise<void> | undefined;

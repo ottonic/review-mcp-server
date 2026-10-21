@@ -6,6 +6,11 @@
   and the distinction between named-feature replacement and anonymous-note append.
 - Keep mutations explicit, database updates atomic where required, input schemas
   strict, and structured tool results consistent with their declared schemas.
+- Never advertise the workspace [`contracts/`](../../contracts/) schemas as a tool
+  `outputSchema`: they use cross-file `$ref`, which MCP clients must not
+  dereference. Advertised schemas must be self-contained. See
+  [ENGINEERING-ARTIFACT-CONTRACT.md](../../ENGINEERING-ARTIFACT-CONTRACT.md)
+  §Relationship to MCP.
 - Keep tests isolated from user databases; use local fixtures and temporary paths.
 - Use strict TypeScript, ESM imports with `.js` extensions, single quotes, and
   existing Prettier/oxlint conventions.

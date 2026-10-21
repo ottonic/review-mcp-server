@@ -4,10 +4,21 @@ import { z } from 'zod';
 
 export const artifactReferenceSchema = z
   .object({
-    revision: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    uri: z.string().url().optional(),
-    format: z.literal('step'),
-    units: z.string().optional(),
+    revision: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .describe(
+        'sha256 revision of the artifact, copied from a Geometry inspect result. It is the anchor every record is stored against, and recall compares it to mark records stale.',
+      ),
+    uri: z
+      .string()
+      .url()
+      .optional()
+      .describe(
+        'Artifact location, as returned by inspect. Records are grouped by it; without a URI the revision alone is the key.',
+      ),
+    format: z.literal('step').describe("Always 'step'."),
+    units: z.string().optional().describe('Spatial unit of the source file, echoed from inspect.'),
   })
   .strict();
 

@@ -71,9 +71,14 @@ authority `cad-mcp-server`, the supplied ID scheme, ID, and kind. Entity IDs are
 opaque outside that scheme and revision. This API currently supports STEP
 geometry annotations, not arbitrary simulation-result artifact formats.
 
-Review stores authored context, not verified measurements, a complete immutable
-audit history, or authoritative approval records. It does not compute geometry,
-run simulation, or decide manufacturability.
+## Limits
+
+Review stores authored context: names, notes, and tags bound to an artifact
+revision. It does not store verified measurements, a complete immutable audit
+history, or authoritative approval records, and it does not compute geometry,
+run simulation, or decide manufacturability. Staleness is judged from a revision
+the caller supplies; Review never opens the CAD file. Multi-author merge and
+conflict handling are not implemented.
 
 ## Development
 
@@ -97,11 +102,12 @@ Server logs go to stderr as newline-delimited pino JSON. `MCP_LOG_LEVEL`
 (`debug`|`info`|`warn`|`error`), `MCP_LOG_FORMAT=human`, and `MCP_TRACE_ID` tune
 them; secret-like fields are redacted.
 
-## Package preparation
+## Packaging
 
 `npm pack` builds first and includes compiled runtime code, package metadata, and
 this README. Tests and source maps are excluded. Install the resulting tarball
 to check the `review-mcp` executable with a compatible MCP client. The server
-requires protocol `2026-07-28`; legacy protocol negotiation is rejected.
+serves both protocol eras: the `2025-11-25` handshake that stock MCP hosts
+negotiate, and the `2026-07-28` envelope through `server/discover`.
 
 A project license must be selected and added before public release.

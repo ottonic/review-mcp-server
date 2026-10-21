@@ -112,7 +112,12 @@ function rowToReview(
 const rememberInput = z
   .object({
     artifact: artifactReferenceSchema,
-    entity_id_scheme: z.string().min(1),
+    entity_id_scheme: z
+      .string()
+      .min(1)
+      .describe(
+        "ID scheme the entity IDs come from, as reported by the producer, e.g. 'occt-topology-v1' for Geometry. IDs are meaningless across schemes.",
+      ),
     entities: z
       .array(z.string())
       .min(1)
