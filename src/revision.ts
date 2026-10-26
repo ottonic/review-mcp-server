@@ -1,4 +1,4 @@
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 
@@ -51,21 +51,6 @@ export function artifactAliases(artifact: ArtifactReference): string[] {
   if (uri.protocol !== 'file:') return [uri.href];
   const filePath = fileURLToPath(uri);
   return [...new Set([uri.href, filePath, resolve(filePath)])];
-}
-
-export function artifactForSource(source: string, revision: string): ArtifactReference | undefined {
-  if (!/^sha256:[a-f0-9]{64}$/.test(revision)) return undefined;
-  let uri: string | undefined;
-  try {
-    uri = source.startsWith('revision:')
-      ? undefined
-      : source.includes('://')
-        ? new URL(source).href
-        : pathToFileURL(resolve(source)).href;
-  } catch {
-    uri = undefined;
-  }
-  return { revision, ...(uri ? { uri } : {}), format: 'step', units: 'mm' };
 }
 
 export function subjectReference(

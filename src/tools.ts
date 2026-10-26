@@ -38,6 +38,7 @@ type ReviewRow = {
   author: string;
   model_revision: string;
   entity_id_scheme: string;
+  artifact_units: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -75,7 +76,6 @@ const reviewOut = z.object({
   kind: z.enum(['feature', 'note']),
   name: z.string().optional(),
   entities: z.array(z.string()),
-  subjects: z.array(subjectReferenceSchema).default([]),
   artifact: artifactReferenceSchema,
   entity_id_scheme: z.string(),
   note: z.string().optional(),
@@ -93,14 +93,18 @@ function rowToReview(
 ) {
   const ids = JSON.parse(row.entity_ids) as string[];
   const tags = JSON.parse(row.tags) as string[];
-  const artifact = { ...currentArtifact, revision: row.model_revision };
+  const artifact = {
+    revision: row.model_revision,
+    ...(currentArtifact.uri === undefined ? {} : { uri: currentArtifact.uri }),
+    format: currentArtifact.format,
+    ...(row.artifact_units === null ? {} : { units: row.artifact_units }),
+  };
   return {
     kind: row.name ? 'feature' : 'note',
     name: row.name ?? undefined,
     entities: ids,
     artifact,
     entity_id_scheme: row.entity_id_scheme,
-    subjects: ids.map((id) => subjectReference(artifact, id, row.entity_id_scheme)),
     note: row.note || undefined,
     tags,
     revision: row.model_revision,
@@ -269,8 +273,8 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
           const merged = dedupe([...existingTags, ...tagList]);
           const fn = JSON.stringify(merged);
           db.prepare(
-            "UPDATE reviews SET note = ?, tags = ?, model_revision = ?, entity_id_scheme = ?, updated_at = datetime('now') WHERE review_key = ?",
-          ).run(noteText, fn, artifact.revision, entity_id_scheme, key);
+            "UPDATE reviews SET note = ?, tags = ?, model_revision = ?, entity_id_scheme = ?, artifact_units = ?, updated_at = datetime('now') WHERE review_key = ?",
+          ).run(noteText, fn, artifact.revision, entity_id_scheme, artifact.units ?? null, key);
           return {
             review: rowToReview(
               db.prepare('SELECT * FROM reviews WHERE review_key = ?').get(key) as ReviewRow,
@@ -281,8 +285,8 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
         }
       }
       db.prepare(
-        'INSERT OR REPLACE INTO reviews (review_key, source_file, name, entity_ids, note, tags, author, model_revision, entity_id_scheme) ' +
-          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO reviews (review_key, source_file, name, entity_ids, note, tags, author, model_revision, entity_id_scheme, artifact_units) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).run(
         key,
         source,
@@ -293,6 +297,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
         'ai',
         artifact.revision,
         entity_id_scheme,
+        artifact.units ?? null,
       );
       const row = db.prepare('SELECT * FROM reviews WHERE review_key = ?').get(key) as ReviewRow;
       return { review: rowToReview(row, artifact), created: true };
@@ -303,7 +308,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     title: 'Recall Reviews',
     description:
       'Retrieve saved reviews for a STEP file, optionally filtered by an entity, free-text search, or tags. ' +
-      'Pass the current ArtifactRef from Geometry inspect; its revision is used to mark each returned record stale or current. Returns subjects and artifact refs with authored review data. ' +
+      'Pass the current ArtifactRef from Geometry inspect; its revision is used to mark each returned record stale or current. Each record returns one artifact reference, its entity IDs and the ID scheme; use these together when handing an annotation to another tool. ' +
       'Use early in a conversation to restore persistent context about a part. ' +
       'Uses the supplied artifact revision to mark saved records stale; it does not open the artifact or require shared filesystem access.',
     inputSchema: recallInput,
@@ -344,7 +349,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       const currentRevision = artifact.revision;
       const rows = db
         .prepare(
-          'SELECT review_key, source_file, name, entity_ids, note, tags, author, model_revision, entity_id_scheme, created_at, updated_at ' +
+          'SELECT review_key, source_file, name, entity_ids, note, tags, author, model_revision, entity_id_scheme, artifact_units, created_at, updated_at ' +
             'FROM reviews ' +
             where +
             ' ORDER BY updated_at DESC LIMIT ? OFFSET ?',

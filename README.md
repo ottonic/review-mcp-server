@@ -66,10 +66,11 @@ Review stores the caller's revision and compares it on recall, rather than openi
 the file or computing geometry. A stale annotation is not automatically mapped
 to new topology.
 
-Returned subjects contain `type: "geometry"`, the artifact, and an entity with
-authority `cad-mcp-server`, the supplied ID scheme, ID, and kind. Entity IDs are
-opaque outside that scheme and revision. This API currently supports STEP
-geometry annotations, not arbitrary simulation-result artifact formats.
+Each returned record contains one artifact reference, its entity IDs, and the
+ID scheme. Pass those together when another tool needs a geometry subject; the
+entity IDs are opaque outside that scheme and revision. This API currently
+supports STEP geometry annotations, not arbitrary simulation-result artifact
+formats.
 
 ## Limits
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -19,8 +20,8 @@ let file: string;
 let revision: string;
 let server: AnyServer;
 const scheme = 'occt-topology-v1';
-function artifact(uri = pathToFileURL(file).href, rev = revision) {
-  return { uri, revision: rev, format: 'step', units: 'mm' };
+function artifact(uri = pathToFileURL(file).href, rev = revision, units = 'mm') {
+  return { uri, revision: rev, format: 'step', units };
 }
 
 async function writeFixture(text = 'ISO-10303-21; HEADER; DATA; END-ISO-10303-21;') {
@@ -56,8 +57,9 @@ type Review = {
   tags: string[];
   revision: string;
   stale?: boolean;
-  artifact: { revision: string };
-  subjects: { artifact: { revision: string } }[];
+  artifact: { revision: string; units?: string };
+  entities: string[];
+  entity_id_scheme: string;
 };
 type StructuredResult = {
   review: Review;
@@ -201,7 +203,65 @@ it('revision changes mark stale reviews', async () => {
   expect(result.current_revision).toBe(revision2);
   expect(first(result.reviews).stale).toBe(true);
   expect(first(result.reviews).artifact.revision).toBe(revision1);
-  expect(first(first(result.reviews).subjects).artifact.revision).toBe(revision1);
+  expect(first(result.reviews).artifact.revision).toBe(revision1);
+});
+
+it('preserves the stored artifact unit when recalled against a later revision', async () => {
+  const source = pathToFileURL(file).href;
+  await handler('remember')({
+    artifact: artifact(source, revision, 'in'),
+    entity_id_scheme: scheme,
+    entities: ['face:0'],
+    name: 'inch feature',
+    note: 'Measured in inches.',
+  });
+
+  const nextRevision = `sha256:${'f'.repeat(64)}`;
+  const recalled = resultData(
+    await handler('recall')({ artifact: artifact(source, nextRevision, 'mm') }),
+  );
+  const saved = first(recalled.reviews);
+  expect(saved.stale).toBe(true);
+  expect(saved.artifact.revision).toBe(revision);
+  expect(saved.artifact.units).toBe('in');
+  expect(saved.entities).toEqual(['face:0']);
+  expect(saved.entity_id_scheme).toBe(scheme);
+});
+
+it('does not infer units for legacy reviews that predate artifact-unit storage', async () => {
+  const source = pathToFileURL(file).href;
+  const oldRevision = `sha256:${'a'.repeat(64)}`;
+  const legacy = new DatabaseSync(process.env.REVIEW_MCP_DB_PATH!);
+  legacy.exec(`CREATE TABLE reviews (
+    review_key TEXT PRIMARY KEY,
+    source_file TEXT NOT NULL,
+    name TEXT,
+    entity_ids TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    author TEXT NOT NULL DEFAULT 'ai',
+    model_revision TEXT NOT NULL,
+    entity_id_scheme TEXT NOT NULL DEFAULT 'occt-topology-v1',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+  legacy
+    .prepare(
+      'INSERT INTO reviews (review_key, source_file, name, entity_ids, note, model_revision, entity_id_scheme) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(`${source}|legacy`, source, 'legacy', '["face:0"]', 'Unknown units', oldRevision, scheme);
+  legacy.close();
+
+  const nextRevision = `sha256:${'b'.repeat(64)}`;
+  const recalled = resultData(
+    await handler('recall')({ artifact: artifact(source, nextRevision, 'mm') }),
+  );
+  const saved = first(recalled.reviews);
+  expect(saved.stale).toBe(true);
+  expect(saved.artifact.revision).toBe(oldRevision);
+  expect(saved.artifact).not.toHaveProperty('units');
+  expect(saved.entities).toEqual(['face:0']);
+  expect(saved.artifact).not.toHaveProperty('units');
 });
 
 it('anonymous notes remain scoped to artifact revision and ID scheme', async () => {
