@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
 import pkg from '../package.json' with { type: 'json' };
 import { logEvent } from './logging.js';
+import { getDb } from './db.js';
 import { runTool } from './tool-helper.js';
 import { SERVER_NAME, PROTOCOL_VERSION, CACHE_TTL_MS } from './identity.js';
 import { PROMPTS } from './prompts.js';
@@ -21,7 +22,7 @@ export function createServer() {
         prompts: { listChanged: false },
       },
       instructions:
-        'Local review memory for geometry. Use remember to save a named feature or a plain note against revision-scoped entity IDs from the geometry server, recall to restore context (records are marked stale when the artifact revision changes), and forget to remove them. Stores authored meaning, not measured facts.',
+        "Local review memory for geometry. Use remember to save a named feature or a plain note against revision-scoped entity IDs from the geometry server, and recall to restore that context. Use remember_decision to save the disposition reached about a revision together with the basis it rests on, and recall_decisions when that revision reappears. Recalled records are marked stale when the artifact revision has changed, and a stale record's entity IDs no longer denote the same geometry. forget removes any of them. Stores authored meaning, not measured facts.",
       cacheHints: {
         'server/discover': { ttlMs: CACHE_TTL_MS, cacheScope: 'public' },
         'tools/list': { ttlMs: CACHE_TTL_MS, cacheScope: 'public' },
@@ -62,6 +63,11 @@ export function createServer() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  // Open the database before serving, and outside the connection factory: `serveStdio`
+  // calls the factory per connection, so a throw in there would leave a process that
+  // has logged that it started while answering nothing. An unusable database is an
+  // operator error and should stop the process where the client can report it.
+  getDb();
   // Serve the 2025-era handshake as well: stock MCP hosts negotiate
   // 2025-11-25, and the same factory serves both eras.
   const handle = serveStdio(createServer, { legacy: 'serve' });

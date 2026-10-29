@@ -2,9 +2,20 @@ import type { ToolAnnotations } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { getDb } from './db.js';
 import {
+  assertDecisionWellFormed,
+  decisionInputSchema,
+  decisionKey,
+  decisionOutSchema,
+  recallDecisionsInput,
+  rowToDecision,
+  type DecisionRow,
+} from './decisions.js';
+import { encodeEntityIds, entityIdPredicate, entityIdsOf } from './entities.js';
+import {
   artifactAliases,
   artifactKey,
   artifactReferenceSchema,
+  echoArtifact,
   subjectReference,
   subjectReferenceSchema,
 } from './revision.js';
@@ -35,7 +46,6 @@ type ReviewRow = {
   entity_ids: string;
   note: string;
   tags: string;
-  author: string;
   model_revision: string;
   entity_id_scheme: string;
   artifact_units: string | null;
@@ -93,12 +103,10 @@ function rowToReview(
 ) {
   const ids = JSON.parse(row.entity_ids) as string[];
   const tags = JSON.parse(row.tags) as string[];
-  const artifact = {
-    revision: row.model_revision,
-    ...(currentArtifact.uri === undefined ? {} : { uri: currentArtifact.uri }),
-    format: currentArtifact.format,
-    ...(row.artifact_units === null ? {} : { units: row.artifact_units }),
-  };
+  const artifact = echoArtifact(
+    { revision: row.model_revision, units: row.artifact_units },
+    currentArtifact,
+  );
   return {
     kind: row.name ? 'feature' : 'note',
     name: row.name ?? undefined,
@@ -164,14 +172,7 @@ const recallInput = z
       .array(z.string())
       .optional()
       .describe("Only return reviews carrying all these tags (without '#')."),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(500)
-      .default(100)
-      .optional()
-      .describe('Max reviews. Default 100.'),
+    limit: z.number().int().min(1).default(100).optional().describe('Max reviews. Default 100.'),
     offset: z
       .number()
       .int()
@@ -190,6 +191,10 @@ const forgetInput = z
       .string()
       .optional()
       .describe('Entity whose anonymous notes to remove (when not named).'),
+    subject: z
+      .string()
+      .optional()
+      .describe('Subject of the decision to remove (when forgetting a decision).'),
   })
   .strict();
 
@@ -230,7 +235,12 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       'Re-remembering a named feature REPLACES it (use this to correct the AI). Re-remembering the same entities without a name APPENDS facts. ' +
       'The more you save, the more the system understands the part across sessions.',
     inputSchema: rememberInput,
-    outputSchema: z.object({ review: reviewOut, created: z.literal(true) }),
+    outputSchema: z.object({
+      review: reviewOut,
+      replaced: z
+        .boolean()
+        .describe('True when this overwrote a record that already existed at this key.'),
+    }),
     annotations: WRITE,
     handler: async ({
       artifact,
@@ -258,49 +268,39 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       const key = isNamed
         ? namedKey(source, name!.trim())
         : anonymousKey(source, artifact.revision, entity_id_scheme, entities);
-      // For a named feature: replace. For an anonymous note: append to an existing note on the same entity set.
-      let noteText = note ?? '';
-      if (!isNamed) {
-        const existing = db
-          .prepare('SELECT note, tags FROM reviews WHERE review_key = ?')
-          .get(key) as { note: string; tags: string } | undefined;
-        if (existing && note) {
-          const prior = existing.note.trim();
-          noteText = prior ? prior + '\n\n' + note.trim() : note.trim();
-        }
-        if (existing) {
-          const existingTags = JSON.parse(existing.tags) as string[];
-          const merged = dedupe([...existingTags, ...tagList]);
-          const fn = JSON.stringify(merged);
-          db.prepare(
-            "UPDATE reviews SET note = ?, tags = ?, model_revision = ?, entity_id_scheme = ?, artifact_units = ?, updated_at = datetime('now') WHERE review_key = ?",
-          ).run(noteText, fn, artifact.revision, entity_id_scheme, artifact.units ?? null, key);
-          return {
-            review: rowToReview(
-              db.prepare('SELECT * FROM reviews WHERE review_key = ?').get(key) as ReviewRow,
-              artifact,
-            ),
-            created: true,
-          };
-        }
-      }
+      const existing = db
+        .prepare('SELECT note, tags FROM reviews WHERE review_key = ?')
+        .get(key) as { note: string; tags: string } | undefined;
+      // A named feature replaces whatever was there. A note appends: the same entity
+      // set is the same subject, so a second remark adds to the first instead of
+      // erasing it.
+      const carried = isNamed ? '' : (existing?.note.trim() ?? '');
+      const noteText = [carried, note?.trim() ?? ''].filter(Boolean).join('\n\n');
+      const tagsToStore = isNamed
+        ? tagList
+        : dedupe([
+            ...(existing === undefined ? [] : (JSON.parse(existing.tags) as string[])),
+            ...tagList,
+          ]);
+      // One statement covers both cases. The upsert is what keeps created_at saying
+      // when the record first appeared, rather than when it was last touched.
       db.prepare(
-        'INSERT OR REPLACE INTO reviews (review_key, source_file, name, entity_ids, note, tags, author, model_revision, entity_id_scheme, artifact_units) ' +
-          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO reviews (review_key, source_file, name, entity_ids, note, tags, model_revision, entity_id_scheme, artifact_units) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+          "ON CONFLICT(review_key) DO UPDATE SET note = excluded.note, tags = excluded.tags, model_revision = excluded.model_revision, entity_id_scheme = excluded.entity_id_scheme, artifact_units = excluded.artifact_units, updated_at = datetime('now')",
       ).run(
         key,
         source,
         isNamed ? name!.trim() : null,
-        JSON.stringify(entities),
+        encodeEntityIds(entities),
         noteText,
-        JSON.stringify(tagList),
-        'ai',
+        JSON.stringify(tagsToStore),
         artifact.revision,
         entity_id_scheme,
         artifact.units ?? null,
       );
       const row = db.prepare('SELECT * FROM reviews WHERE review_key = ?').get(key) as ReviewRow;
-      return { review: rowToReview(row, artifact), created: true };
+      return { review: rowToReview(row, artifact), replaced: existing !== undefined };
     },
   }),
   defineTool({
@@ -309,6 +309,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     description:
       'Retrieve saved reviews for a STEP file, optionally filtered by an entity, free-text search, or tags. ' +
       'Pass the current ArtifactRef from Geometry inspect; its revision is used to mark each returned record stale or current. Each record returns one artifact reference, its entity IDs and the ID scheme; use these together when handing an annotation to another tool. ' +
+      'An entity filter matches only reviews written against the supplied revision, because a face ID denotes different geometry in a different revision; text and tag filters are not scoped that way. ' +
       'Use early in a conversation to restore persistent context about a part. ' +
       'Uses the supplied artifact revision to mark saved records stale; it does not open the artifact or require shared filesystem access.',
     inputSchema: recallInput,
@@ -331,8 +332,14 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       const clauses: string[] = [`source_file IN (${aliases.map(() => '?').join(',')})`];
       params.push(...aliases);
       if (entity_id) {
-        clauses.push('entity_ids LIKE ?');
-        params.push('%' + entity_id + '%');
+        // Entity addressing is revision-scoped, because an ID denotes different
+        // geometry in a different revision: a review of face:3 from another revision
+        // is not a review of face:3 now. Text and tag searches are not scoped this
+        // way — finding that a part was reviewed before is exactly what they are for.
+        clauses.push('model_revision = ?');
+        params.push(artifact.revision);
+        clauses.push(entityIdPredicate('reviews.entity_ids'));
+        params.push(entity_id);
       }
       if (search && search.trim()) {
         clauses.push("(COALESCE(name,'') LIKE ? OR note LIKE ?)");
@@ -349,7 +356,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       const currentRevision = artifact.revision;
       const rows = db
         .prepare(
-          'SELECT review_key, source_file, name, entity_ids, note, tags, author, model_revision, entity_id_scheme, artifact_units, created_at, updated_at ' +
+          'SELECT review_key, source_file, name, entity_ids, note, tags, model_revision, entity_id_scheme, artifact_units, created_at, updated_at ' +
             'FROM reviews ' +
             where +
             ' ORDER BY updated_at DESC LIMIT ? OFFSET ?',
@@ -365,21 +372,31 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'forget',
     title: 'Forget a Review',
     description:
-      'Delete a saved review. Pass the feature name to remove a named feature, or an entity id to remove anonymous notes attached to that entity. Idempotent. Use only when the user explicitly asks to remove it.',
+      'Delete a saved record. Pass the feature name to remove a named feature, an entity id to remove the anonymous notes attached to that entity, or a subject to remove a decision. Idempotent. Use only when the user explicitly asks to remove it.',
     inputSchema: forgetInput,
     outputSchema: z.object({
       deleted: z.literal(true),
       name: z.string().optional(),
       entity_id: z.string().optional(),
+      subject: z.string().optional(),
     }),
     annotations: DESTRUCTIVE,
     handler: async ({
       artifact,
       name,
       entity_id,
+      subject,
     }: z.output<typeof forgetInput>): Promise<Record<string, unknown>> => {
       const db = getDb();
       const aliases = artifactAliases(artifact);
+      const selectors = [name, entity_id, subject].filter((value) => value !== undefined);
+      if (selectors.length !== 1) {
+        throw {
+          code: 'invalid_selection',
+          message:
+            'Pass exactly one of name (a named feature), entity_id (anonymous notes on that entity), or subject (a decision).',
+        };
+      }
       if (name) {
         db.prepare(
           `DELETE FROM reviews WHERE source_file IN (${aliases.map(() => '?').join(',')}) AND name = ?`,
@@ -387,10 +404,135 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       } else if (entity_id) {
         // Delete anonymous reviews containing this entity (note: entity_ids is a JSON array in the DB).
         db.prepare(
-          `DELETE FROM reviews WHERE source_file IN (${aliases.map(() => '?').join(',')}) AND name IS NULL AND entity_ids LIKE ?`,
-        ).run(...aliases, '%' + entity_id + '%');
+          `DELETE FROM reviews WHERE source_file IN (${aliases.map(() => '?').join(',')}) AND name IS NULL AND ${entityIdPredicate('reviews.entity_ids')}`,
+        ).run(...aliases, entity_id);
+      } else if (subject) {
+        db.prepare(
+          `DELETE FROM decisions WHERE source_file IN (${aliases.map(() => '?').join(',')}) AND subject = ?`,
+        ).run(...aliases, subject);
       }
-      return { deleted: true, name, entity_id };
+      return { deleted: true, name, entity_id, subject };
+    },
+  }),
+  defineTool({
+    name: 'remember_decision',
+    title: 'Remember a Decision',
+    description:
+      'Save the disposition reached about an artifact revision, with the basis it rests on: a list of requirement-checks, each saying where its requirement came from and what happened when it was checked. ' +
+      'Re-remembering the same subject on the same artifact revision REPLACES that decision, which is how a decision is revised as the engineer answers questions or disagrees with a line. A different subject starts a separate decision, because one part can carry several at once. ' +
+      'Record each engineer verdict when they have given one: a requirement the engineer accepted is a different thing from one that was proposed. ' +
+      'Store each requirement as stated and each piece of evidence as it was reported. This server never opens or measures the artifact, so recall returns what was concluded, not a measurement — Geometry remains the authority for numbers.',
+    inputSchema: decisionInputSchema,
+    outputSchema: z.object({
+      decision: decisionOutSchema,
+      replaced: z
+        .boolean()
+        .describe('True when this revised a decision that already existed at this subject.'),
+    }),
+    annotations: WRITE,
+    handler: async (
+      input: z.output<typeof decisionInputSchema>,
+    ): Promise<Record<string, unknown>> => {
+      assertDecisionWellFormed(input);
+      const db = getDb();
+      const source = artifactKey(input.artifact);
+      const key = decisionKey(source, input.artifact.revision, input.subject);
+      const entityIds = encodeEntityIds(entityIdsOf(input.basis));
+      const existing = db
+        .prepare('SELECT decision_key FROM decisions WHERE decision_key = ?')
+        .get(key);
+      if (existing === undefined) {
+        db.prepare(
+          'INSERT INTO decisions (decision_key, source_file, model_revision, subject, recommendation, confidence, status, basis, entity_ids, artifact_units, supersedes) ' +
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(
+          key,
+          source,
+          input.artifact.revision,
+          input.subject,
+          input.recommendation,
+          input.confidence,
+          input.status,
+          JSON.stringify(input.basis),
+          entityIds,
+          input.artifact.units ?? null,
+          input.supersedes ?? null,
+        );
+      } else {
+        // Update in place so created_at keeps saying when this decision first
+        // appeared, which is what an audit reads it for.
+        db.prepare(
+          "UPDATE decisions SET recommendation = ?, confidence = ?, status = ?, basis = ?, entity_ids = ?, artifact_units = ?, supersedes = ?, updated_at = datetime('now') WHERE decision_key = ?",
+        ).run(
+          input.recommendation,
+          input.confidence,
+          input.status,
+          JSON.stringify(input.basis),
+          entityIds,
+          input.artifact.units ?? null,
+          input.supersedes ?? null,
+          key,
+        );
+      }
+      const row = db
+        .prepare('SELECT * FROM decisions WHERE decision_key = ?')
+        .get(key) as DecisionRow;
+      return { decision: rowToDecision(row, input.artifact), replaced: existing !== undefined };
+    },
+  }),
+  defineTool({
+    name: 'recall_decisions',
+    title: 'Recall Decisions',
+    description:
+      'Retrieve decisions saved for an artifact, newest first, each marked stale when it was made against a different revision than the one supplied. ' +
+      'Pass the current ArtifactRef from Geometry inspect. Filter by subject text, status, or an entity that appears in the basis. ' +
+      'An entity filter matches only decisions made against the supplied revision, because a face ID is scoped to the revision that produced it: a decision about face:3 in an older revision is not a decision about face:3 now. ' +
+      'Use this when a revision reappears, to recover what was already concluded instead of reaching it again.',
+    inputSchema: recallDecisionsInput,
+    outputSchema: z.object({
+      decisions: z.array(decisionOutSchema).default([]),
+      current_revision: z.string().optional(),
+    }),
+    annotations: READ_ONLY,
+    handler: async ({
+      artifact,
+      subject,
+      status,
+      entity_id,
+      limit,
+      offset,
+    }: z.output<typeof recallDecisionsInput>): Promise<Record<string, unknown>> => {
+      const db = getDb();
+      const params: (string | number)[] = [];
+      const aliases = artifactAliases(artifact);
+      const clauses: string[] = [`source_file IN (${aliases.map(() => '?').join(',')})`];
+      params.push(...aliases);
+      if (subject !== undefined && subject.trim() !== '') {
+        clauses.push('subject LIKE ?');
+        params.push('%' + subject.trim() + '%');
+      }
+      if (status !== undefined) {
+        clauses.push('status = ?');
+        params.push(status);
+      }
+      if (entity_id !== undefined && entity_id !== '') {
+        clauses.push('model_revision = ?');
+        params.push(artifact.revision);
+        clauses.push(entityIdPredicate('decisions.entity_ids'));
+        params.push(entity_id);
+      }
+      params.push(limit ?? 100, offset ?? 0);
+      const rows = db
+        .prepare(
+          'SELECT * FROM decisions WHERE ' +
+            clauses.join(' AND ') +
+            ' ORDER BY updated_at DESC LIMIT ? OFFSET ?',
+        )
+        .all(...params) as DecisionRow[];
+      return {
+        decisions: rows.map((row) => rowToDecision(row, artifact, artifact.revision)),
+        current_revision: artifact.revision,
+      };
     },
   }),
 ];
