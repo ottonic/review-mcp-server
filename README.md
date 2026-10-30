@@ -1,10 +1,16 @@
-# Review MCP Server
+# Ottorev — Review MCP Server
 
-Standalone local stdio MCP server for revision-aware geometry names, notes, tags,
-and decisions stored in SQLite. It works with any compatible MCP client and does
-not require access to the CAD file to save or retrieve records.
+The memory an engineering assistant needs. This local stdio MCP server records
+**names, notes, tags, and decisions** against an exact CAD revision in SQLite, so
+an assistant can pick up where it left off — remember that a face is the mating
+surface, that a tolerance callout is tight, or that a review concluded *hold*
+with the requirements behind it.
 
-## Setup and launch
+It never opens the CAD file: it stores the revision the caller supplies and
+compares it on recall, so it works on a laptop with no CAD software and no other
+server running.
+
+## Quick start
 
 Requires Node.js 24+ and npm. From this repository:
 
@@ -14,7 +20,7 @@ npm run build
 REVIEW_MCP_DB_PATH=/absolute/path/to/review.db npm start
 ```
 
-For a generic MCP client:
+For any MCP client:
 
 ```json
 {
@@ -28,25 +34,24 @@ For a generic MCP client:
 }
 ```
 
-`REVIEW_MCP_DB_PATH` defaults to `./review-mcp.db`, relative to the server's working
-directory. Parent directories are created automatically. Records persist across
-server restarts; protect and back up the database as application data.
+`REVIEW_MCP_DB_PATH` defaults to `./review-mcp.db`; parent directories are created
+automatically. Records persist across restarts — protect and back up the database
+as application data.
 
 ## Tools
 
 | Tool       | Behavior                                                                                                                                                                                                                                             |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `remember` | Accepts `artifact`, `entity_id_scheme`, nonempty `entities`, and optional `name`, `note`, `tags`. A named feature replaces the existing feature at that locator/name; an anonymous note appends within the same revision, ID scheme, and entity set. Returns `replaced` so a caller can tell which happened. |
-| `recall`   | Accepts `artifact` and optional `entity_id`, `search`, `tags`, `limit`, `offset`. Returns saved records and stale state based on the supplied current revision. Follow pagination for complete retrieval.                                            |
-| `remember_decision` | Accepts `artifact`, `subject`, `recommendation`, `confidence`, nonempty `basis`, and optional `status`, `supersedes`. Saves the disposition reached about a revision and the requirement-checks behind it. Re-remembering the same subject on the same revision replaces it; a different subject starts a separate decision. |
-| `recall_decisions`  | Accepts `artifact` and optional `subject` text, `status`, `entity_id`, `limit`, `offset`. Returns decisions newest first, each marked stale when it belongs to another revision. An `entity_id` filter matches only the supplied revision. |
-| `forget`   | Accepts `artifact` and exactly one of a feature `name`, an anonymous-note `entity_id`, or a decision `subject`. Deletes matching records; repeated deletion is idempotent.                                                                                                                    |
+| `remember` | Save a **named feature** (re-remember replaces) or an **anonymous note** (re-remember appends) against an entity set, with tags. Returns `replaced` so a caller can tell which happened.                                                             |
+| `recall`   | Retrieve by artifact, entity, free text, or tags; marks each record **stale** against a supplied current revision. Follow pagination for complete retrieval.                                                                                         |
+| `remember_decision` | Save the **disposition** reached about a revision and its **basis** — one row per requirement-check, naming the source, the evidence, the state, and the engineer's verdict. Re-remembering the same subject replaces it.                    |
+| `recall_decisions`  | Return decisions newest-first, each marked stale when it belongs to another revision. An `entity_id` filter matches only the supplied revision.                                                                                             |
+| `forget`   | Delete a named feature, an anonymous note by entity, or a decision by subject. Idempotent.                                                                                                                                                           |
 
-Results provide structured content and text. Tool failures set MCP `isError`.
+Results provide structured content and text; tool failures set MCP `isError`.
 Writes change local records; the client controls when to request those mutations.
-The server also advertises engineering-review prompts. Composed prompts may
-request geometry tools from another configured server; core record operations
-do not require that server to run.
+The server also advertises engineering-review prompts that compose with a geometry
+server, while the core record operations run on their own.
 
 ## Artifact and subject semantics
 
@@ -73,35 +78,26 @@ caller usually has in hand:
 ```
 
 Both spellings address the same records: a path is normalised to a `file:` URI
-before anything is stored or matched against it, and a returned record echoes the
-canonical URI. A relative path resolves against the server working directory. The
-normalisation is a convenience for the caller — it never opens the file, so a
-record can still be written for an artifact this server cannot read.
-
-Review stores the caller's revision and compares it on recall, rather than opening
-the file or computing geometry. A stale annotation is not automatically mapped
-to new topology.
+before anything is stored or matched. A relative path resolves against the server
+working directory. Normalisation never opens the file, so a record can be written
+for an artifact this server cannot read.
 
 **An entity filter is revision-scoped; a text or tag filter is not.** An entity ID
 denotes different geometry in a different revision, so `recall` and
-`recall_decisions` match an `entity_id` only against records written for the revision
-supplied, and match it exactly — `face:3` does not match `face:30`. Names, notes,
-subjects, and tags are matched across revisions, which is how a record from an earlier
-revision is found at all, and every result says whether it is `stale`.
+`recall_decisions` match an `entity_id` only against records written for the
+supplied revision, and match it exactly — `face:3` does not match `face:30`. Names,
+notes, subjects, and tags are matched across revisions, which is how an earlier
+record is found at all, and every result says whether it is `stale`.
 
-Each returned record contains one artifact reference, its entity IDs, and the
-ID scheme. Pass those together when another tool needs a geometry subject; the
-entity IDs are opaque outside that scheme and revision. This API currently
-supports STEP geometry annotations, not arbitrary simulation-result artifact
-formats.
+Each returned record contains one artifact reference, its entity IDs, and the ID
+scheme. The entity IDs are opaque outside that scheme and revision.
 
 ## Decision records
 
-A review names or annotates geometry. A decision is the other thing a review
-conversation produces: a **disposition** about a revision, and the **basis** it rests
-on.
+A review names or annotates geometry. A **decision** is the other thing a review
+produces: a disposition about a revision, and the **basis** it rests on.
 
-One basis item is one requirement-check, and it has to be able to answer for itself:
+One basis item is one requirement-check, and it answers for itself:
 
 | field | what it carries |
 | --- | --- |
@@ -111,33 +107,31 @@ One basis item is one requirement-check, and it has to be able to answer for its
 | `evidence` | the value as it was reported, quoted with its provenance |
 | `state` | `satisfied`, `violated`, `unresolved`, `conflicting`, or `not-applicable` |
 | `question` | **required** for `unresolved` and `conflicting`: what would settle it |
-| `faces` | the geometry the item is about, in this revision; always present, empty when the item is about the part rather than a feature |
+| `faces` | the geometry the item is about, in this revision; always present, empty when the item is about the part |
 | `verdict` | the engineer's `accepted` / `rejected` judgement, with a reason when they gave one |
 
-`unresolved` and `conflicting` are first-class outcomes: a decision that carries them
-is a complete record of where the work stands, not a failure to decide. A basis item
-is refused when it cannot answer for itself — no `source`, or a state of
+`unresolved` and `conflicting` are first-class outcomes: a decision that carries
+them is a complete record of where the work stands, not a failure to decide. A
+basis item is refused when it cannot answer for itself — no `source`, or a state of
 `unresolved`/`conflicting` with no `question`.
 
 Three properties matter more than the shape:
 
-- **A decision is bound to a revision.** The revision is part of its key, so the same
-  subject at the same revision is recalled rather than reached again, and a decision
-  made against a different revision comes back marked `stale: true`, still carrying
-  the revision it belongs to.
+- **A decision is bound to a revision.** The revision is part of its key, so the
+  same subject at the same revision is recalled rather than reached again, and a
+  decision made against a different revision comes back marked `stale: true`,
+  still carrying the revision it belongs to.
 - **Face IDs do not travel between revisions.** Topological naming is unsolved in
-  OCCT and this API does not pretend otherwise, so an `entity_id` filter matches only
-  the revision that produced the ID, and matches it exactly: `face:3` does not match
-  `face:30`. A decision about `face:3` in an older revision is not a decision about
-  `face:3` now.
-- **Verdicts are what make a requirement agreed.** Recording a `verdict` turns a line
-  the assistant proposed into one the engineer accepted or rejected, which is the
+  OCCT, and this API does not pretend otherwise: an `entity_id` filter matches only
+  the revision that produced the ID.
+- **Verdicts are what make a requirement agreed.** Recording a `verdict` turns a
+  line the assistant proposed into one the engineer accepted or rejected — the
   record of how much authority the assistant actually earned.
 
 A stored decision is the caller's own account: the requirement as stated and the
-evidence as quoted. This server never measures anything, so a recalled decision is a
-record of what was concluded, not a measurement cache — Geometry remains the authority
-for numbers.
+evidence as quoted. This server never measures anything, so a recalled decision is
+a record of what was concluded, not a measurement cache — Geometry remains the
+authority for numbers.
 
 ## Limits
 
@@ -145,13 +139,12 @@ Review stores authored context: names, notes, and tags bound to an artifact
 revision, and decisions with the requirements they rest on. It does not store
 verified measurements, a complete immutable audit history, or authoritative
 approval records, and it does not compute geometry, run simulation, or decide
-manufacturability. Staleness is judged from a revision the caller supplies;
-Review never opens the CAD file. Multi-author merge and conflict handling are not
-implemented.
+manufacturability. Staleness is judged from a revision the caller supplies; Review
+never opens the CAD file.
 
-There are no schema migrations. The database is a working file, and a changed table
-shape means deleting it; the server reports the version mismatch rather than guessing
-at a transformation.
+There are no schema migrations: the database is a working file, and a changed
+table shape means deleting it. The server reports the version mismatch rather than
+guessing at a transformation.
 
 ## Development
 
@@ -178,9 +171,11 @@ them; secret-like fields are redacted.
 ## Packaging
 
 `npm pack` builds first and includes compiled runtime code, package metadata, and
-this README. Tests and source maps are excluded. Install the resulting tarball
-to check the `review-mcp` executable with a compatible MCP client. The server
-serves both protocol eras: the `2025-11-25` handshake that stock MCP hosts
-negotiate, and the `2026-07-28` envelope through `server/discover`.
+this README. Tests and source maps are excluded. Install the tarball to check the
+`review-mcp` executable with a compatible MCP client. The server serves both
+protocol eras: the `2025-11-25` handshake that stock MCP hosts negotiate, and the
+`2026-07-28` envelope through `server/discover`.
 
-A project license must be selected and added before public release.
+## License
+
+MIT. Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
