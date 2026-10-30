@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ottonic/review-mcp-server",
   "title": "Ottorev — Review MCP Server",
-  "description": "Local review context for CAD inspection: persist entity names, notes, and revision-bound decisions in SQLite and query them by entity, text, or tag.",
+  "description": "Durable review context for CAD: entity names, notes, tags, and revision-bound decisions.",
   "repository": {
     "url": "https://github.com/ottonic/review-mcp-server",
     "source": "github",
