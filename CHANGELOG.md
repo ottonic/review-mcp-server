@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/ottonic/review-mcp-server/compare/review-mcp-server-v0.2.0...review-mcp-server-v0.2.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* keep the registry description within the 100-character limit ([#7](https://github.com/ottonic/review-mcp-server/issues/7)) ([43bada2](https://github.com/ottonic/review-mcp-server/commit/43bada24a9ab71f8d9c2c1699b6445cf616c43cf))
+
 ## [0.2.0](https://github.com/ottonic/review-mcp-server/compare/review-mcp-server-v0.1.0...review-mcp-server-v0.2.0) (2026-10-30)
 
 
