@@ -13,3 +13,10 @@ result
 node_modules/
 dist/
 review-mcp.db
+
+# Internal planning and records (not for the public repo)
+.planning/
+TODO.md
+test_prompts.md
+docs/records/
+*-ledger.md
