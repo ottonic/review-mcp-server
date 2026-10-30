@@ -4,14 +4,41 @@
   "description": "Local review context for CAD inspection: persist entity names, notes, and revision-bound decisions in SQLite and query them by entity, text, or tag.",
   "author": "Matt Mohandiss <mattmohandiss@gmail.com>",
   "license": "MIT",
+  "mcpName": "io.github.ottonic/review-mcp-server",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ottonic/review-mcp-server.git"
+  },
+  "homepage": "https://github.com/ottonic/review-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/ottonic/review-mcp-server/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cad",
+    "step",
+    "review",
+    "notes",
+    "annotations",
+    "engineering",
+    "revision",
+    "sqlite",
+    "ai-tools"
+  ],
   "main": "dist/src/index.js",
   "files": [
     "dist/src",
     "dist/package.json",
     "!dist/**/*.map",
     "README.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "server.json"
   ],
   "bin": {
     "review-mcp": "dist/src/index.js"
