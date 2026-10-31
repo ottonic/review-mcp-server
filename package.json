@@ -61,7 +61,7 @@
     "fmt:check": "prettier --check src tests package.json tsconfig.json tsconfig.build.json vitest.config.ts vitest.integration.config.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/server": "2.4.0",
     "pino": "^10.4.0",
     "zod": "^4.6.7"
   },
