@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/ottonic/review-mcp-server/compare/review-mcp-server-v0.2.2...review-mcp-server-v0.3.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Node 26 and move to MCP SDK 2.4.0 ([#16](https://github.com/ottonic/review-mcp-server/issues/16))
+
+### Features
+
+* require Node 26 and move to MCP SDK 2.4.0 ([#16](https://github.com/ottonic/review-mcp-server/issues/16)) ([ebebe45](https://github.com/ottonic/review-mcp-server/commit/ebebe453220b6cf57c05fdae83c6e58964b87bfa))
+
 ## [0.2.2](https://github.com/ottonic/review-mcp-server/compare/review-mcp-server-v0.2.1...review-mcp-server-v0.2.2) (2026-10-31)
 
 
