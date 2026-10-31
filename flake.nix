@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/331800de5053fcebacf6813adb5db9c9dca22a0c";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =
@@ -20,7 +20,7 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               just
-              nodejs_24
+              nodejs_26
               typescript-language-server
             ];
             shellHook = ''

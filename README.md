@@ -12,7 +12,7 @@ server running.
 
 ## Quick start
 
-Requires Node.js 24+ and npm. From this repository:
+Requires Node.js 26+ and npm. From this repository:
 
 ```sh
 npm install
@@ -148,7 +148,7 @@ guessing at a transformation.
 
 ## Development
 
-Requires Node.js 24+ and [`just`](https://github.com/casey/just). A Nix flake and
+Requires Node.js 26+ and [`just`](https://github.com/casey/just). A Nix flake and
 `.envrc` provide the toolchain; run `direnv allow` after changing either.
 
 | Recipe           | Purpose                                         |
