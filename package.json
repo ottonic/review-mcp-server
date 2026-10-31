@@ -1,6 +1,6 @@
 {
   "name": "review-mcp-server",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Local review context for CAD inspection: persist entity names, notes, and revision-bound decisions in SQLite and query them by entity, text, or tag.",
   "author": "Matt Mohandiss <mattmohandiss@gmail.com>",
   "license": "MIT",
