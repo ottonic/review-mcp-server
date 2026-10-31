@@ -9,12 +9,12 @@
     "id": "1439866934"
   },
   "websiteUrl": "https://github.com/ottonic/review-mcp-server#readme",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "review-mcp-server",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "transport": {
         "type": "stdio"
       }
