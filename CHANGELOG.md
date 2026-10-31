@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/ottonic/review-mcp-server/compare/review-mcp-server-v0.2.1...review-mcp-server-v0.2.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **ci:** make the release publish step idempotent and retryable ([#11](https://github.com/ottonic/review-mcp-server/issues/11)) ([34d2fea](https://github.com/ottonic/review-mcp-server/commit/34d2fea0cbfa5841e939aa053fda5d1ae28a006b))
+
 ## [0.2.1](https://github.com/ottonic/review-mcp-server/compare/review-mcp-server-v0.2.0...review-mcp-server-v0.2.1) (2026-10-30)
 
 
